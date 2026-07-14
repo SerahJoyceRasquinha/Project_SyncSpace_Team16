@@ -1,0 +1,249 @@
+import * as Y from 'yjs';
+import DocState from '../models/DocState.js';
+import { verifyToken, signAccessToken } from '../utils/token.js';
+import { findWorkspace, findMember, pendingOf, publicView } from './workspaceStore.js';
+import * as svc from './workspaceService.js';
+import * as rt from './realtime.js';
+
+/**
+ * Blueprint Part 13 - Socket Events, now gated.
+ *
+ * The Yjs relay is UNCHANGED from Milestone 0: the server keeps one authoritative
+ * Y.Doc per workspace and moves opaque binary updates around. What is new is the
+ * turnstile in front of it — io.use() decides who may speak to the document.
+ *
+ * Two classes of socket:
+ *   kind = 'access'  -> a member. Joins ws:<id>, gets sync + awareness.
+ *   kind = 'lobby'   -> someone awaiting approval. Joins lobby:<id>:<req> ONLY.
+ *                       No sync handler is even registered for them, so they
+ *                       cannot see the document, the cursors, or the peer list.
+ */
+
+// workspaceId -> { doc, dirty, timer }
+const rooms = new Map();
+
+let persistenceEnabled = false;
+export function setPersistence(flag) {
+  persistenceEnabled = flag;
+}
+
+async function getRoom(workspaceId) {
+  if (rooms.has(workspaceId)) return rooms.get(workspaceId);
+
+  const doc = new Y.Doc();
+
+  if (persistenceEnabled) {
+    try {
+      const saved = await DocState.findOne({ roomId: workspaceId }).lean();
+      if (saved?.state) {
+        Y.applyUpdate(doc, new Uint8Array(saved.state));
+        console.log(`[yjs] "${workspaceId}" restored from MongoDB`);
+      }
+    } catch (err) {
+      console.warn('[yjs] restore failed:', err.message);
+    }
+  }
+
+  const entry = { doc, dirty: false, timer: null };
+
+  doc.on('update', () => {
+    if (!persistenceEnabled) return;
+    entry.dirty = true;
+    if (entry.timer) return;
+    entry.timer = setTimeout(async () => {
+      entry.timer = null;
+      if (!entry.dirty) return;
+      entry.dirty = false;
+      try {
+        const state = Buffer.from(Y.encodeStateAsUpdate(doc));
+        await DocState.findOneAndUpdate(
+          { roomId: workspaceId },
+          { roomId: workspaceId, state },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.warn('[yjs] snapshot failed:', err.message);
+      }
+    }, 2000);
+  });
+
+  rooms.set(workspaceId, entry);
+  return entry;
+}
+
+// ---------------------------------------------------------------- handshake
+
+async function authenticate(socket, next) {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error('AUTH_REQUIRED'));
+
+  const payload = verifyToken(token);
+  if (!payload) return next(new Error('AUTH_INVALID'));
+
+  const workspace = await findWorkspace(payload.workspaceId);
+  if (!workspace) return next(new Error('WORKSPACE_NOT_FOUND'));
+  if (workspace.status === 'closed') return next(new Error('WORKSPACE_CLOSED'));
+
+  if (payload.kind === 'access') {
+    // Membership is re-checked on EVERY connect, so a removed user's token dies
+    // immediately and we never have to maintain a revocation list.
+    const member = findMember(workspace, payload.userId);
+    if (!member) return next(new Error('NOT_A_MEMBER'));
+
+    socket.data = {
+      kind: 'access',
+      workspaceId: workspace.workspaceId,
+      userId: payload.userId,
+      username: member.username,
+      role: member.role
+    };
+    return next();
+  }
+
+  if (payload.kind === 'lobby') {
+    socket.data = {
+      kind: 'lobby',
+      workspaceId: workspace.workspaceId,
+      requestId: payload.requestId,
+      username: payload.username
+    };
+    return next();
+  }
+
+  return next(new Error('AUTH_INVALID'));
+}
+
+// ------------------------------------------------------------------- setup
+
+export function setupSocket(io) {
+  rt.bindIo(io);
+
+  io.use((socket, next) => {
+    authenticate(socket, next).catch(() => next(new Error('AUTH_INVALID')));
+  });
+
+  io.on('connection', async (socket) => {
+    const { kind, workspaceId } = socket.data;
+
+    // ===================================================================
+    //  WAITING ROOM SOCKET
+    // ===================================================================
+    if (kind === 'lobby') {
+      const { requestId, username } = socket.data;
+      socket.join(rt.lobbyOf(workspaceId, requestId));
+
+      // Handles "the user refreshed the waiting page" — replay whatever already
+      // happened rather than leaving them on a spinner forever.
+      const status = await svc.getRequestStatus({ workspaceId, requestId });
+
+      if (!status.ok) {
+        socket.emit('join:rejected', { reason: 'Your request is no longer valid.' });
+      } else if (status.request.status === 'approved') {
+        const member = (status.workspace.members || []).find(
+          (m) => m.username.toLowerCase() === username.toLowerCase()
+        );
+        if (member) {
+          socket.emit('join:approved', {
+            token: signAccessToken({
+              workspaceId,
+              userId: member.userId,
+              username: member.username,
+              role: member.role
+            }),
+            workspace: publicView(status.workspace)
+          });
+        }
+      } else if (status.request.status === 'rejected') {
+        socket.emit('join:rejected', {
+          reason: 'The administrator declined your request to join.'
+        });
+      } else {
+        socket.emit('join:waiting', { requestId, username });
+        // Re-announce, in case the admin connected AFTER the request landed.
+        rt.toAdmin(workspaceId, 'join:requested', { request: status.request });
+      }
+
+      return; // no sync handler, no awareness handler. Nothing else is wired up.
+    }
+
+    // ===================================================================
+    //  MEMBER SOCKET — the Milestone 0 collaborative socket
+    // ===================================================================
+    const { userId, username, role } = socket.data;
+
+    socket.join(rt.roomOf(workspaceId));
+    if (role === 'admin') socket.join(rt.adminRoomOf(workspaceId));
+
+    const { doc } = await getRoom(workspaceId);
+    socket.emit('sync-update', Y.encodeStateAsUpdate(doc));
+
+    const broadcastPresence = () => {
+      rt.toWorkspace(workspaceId, 'room-info', {
+        workspaceId,
+        users: rt.connectedCount(workspaceId),
+        connected: rt.connectedUsers(workspaceId)
+      });
+    };
+    broadcastPresence();
+
+    // The admin picks up anything that piled up while they were offline.
+    if (role === 'admin') {
+      const workspace = await findWorkspace(workspaceId);
+      socket.emit('join:pending', { requests: pendingOf(workspace) });
+    }
+
+    console.log(`[socket] ${username} (${role}) -> ${workspaceId}`);
+
+    // ---- Yjs relay: byte for byte the original behaviour ---------------
+    socket.on('sync-update', async (update) => {
+      const bytes = new Uint8Array(update);
+      const room = await getRoom(workspaceId);
+      Y.applyUpdate(room.doc, bytes, socket.id);
+      socket.to(rt.roomOf(workspaceId)).emit('sync-update', bytes);
+    });
+
+    socket.on('awareness-update', (update) => {
+      socket.to(rt.roomOf(workspaceId)).emit('awareness-update', new Uint8Array(update));
+    });
+
+    // ---- administrator actions ----------------------------------------
+    // Authority comes from socket.data, which was set at handshake time from a
+    // SIGNED token. Never from the payload. A member emitting 'admin:approve'
+    // receives an error, not an approval.
+    const asAdmin = (handler) => async (payload, ack) => {
+      if (socket.data.role !== 'admin') {
+        return ack?.({ ok: false, message: 'Only the administrator can do that.' });
+      }
+      try {
+        const result = await handler(payload || {});
+        ack?.(result.ok ? result : { ok: false, message: result.message });
+      } catch (err) {
+        console.error('[socket] admin action failed:', err.message);
+        ack?.({ ok: false, message: 'Something went wrong. Please try again.' });
+      }
+    };
+
+    socket.on('admin:approve', asAdmin(({ requestId }) =>
+      svc.approveRequest({ workspaceId, requestId })
+    ));
+
+    socket.on('admin:reject', asAdmin(({ requestId, reason }) =>
+      svc.rejectRequest({ workspaceId, requestId, reason })
+    ));
+
+    socket.on('admin:set-policy', asAdmin(({ permissionMode }) =>
+      svc.setPermissionMode({ workspaceId, permissionMode })
+    ));
+
+    socket.on('admin:remove-user', asAdmin(({ userId: target }) =>
+      svc.removeMember({ workspaceId, userId: target, actorId: userId })
+    ));
+
+    socket.on('admin:pending', asAdmin(async () => {
+      const workspace = await findWorkspace(workspaceId);
+      return { ok: true, requests: pendingOf(workspace) };
+    }));
+
+    socket.on('disconnect', () => broadcastPresence());
+  });
+}

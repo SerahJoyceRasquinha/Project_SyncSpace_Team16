@@ -1,260 +1,180 @@
-# SyncSpace — Prerequisites Setup Guide (Windows) 
+# SyncSpace — Milestone 1 (secure workspaces)
 
-Before you can run SyncSpace you need two tools: **Node.js** (runs the backend and builds the
-frontend) and **Git** (version control).
+Real-time collaborative whiteboard + code editor, now behind a proper workspace
+access system: administrators, hashed secret codes, a waiting room, and a policy
+the admin can flip at any time.
 
-Do them in order. After each one, run the verify command — if it doesn't print a version number,
-stop and fix it before moving on.
-
-> **Golden rule:** after installing anything, **close every open terminal and VS Code window**,
-> then open a fresh one. Installers update your `PATH`, but already-open terminals keep using the
-> old one. Roughly 90% of "it's installed but the command isn't recognised" is this.
+**Everything from Milestone 0 still works exactly as before** — Yjs CRDT sync, the
+Konva whiteboard, the Monaco editor, awareness cursors, MongoDB snapshots. The
+collaboration core was extended, not rewritten.
 
 ---
 
-## 1. Node.js + npm
+## What changed
 
-Node.js is the JavaScript runtime. `npm` (the package manager) is bundled with it — you do **not**
-install npm separately.
+The app no longer drops you into a room. It opens on **Create Workspace / Join Workspace**.
 
-### Download
+**Create** → you become the administrator. You set a workspace name, a secret code
+(bcrypt-hashed), your username, and an access policy. You are taken straight in.
 
-1. Go to **<https://nodejs.org>**
-2. Click the **LTS** button (the recommended one, not "Current").
-3. You'll get a file like `node-v22.x.x-x64.msi`. Run it.
+**Join** → workspace ID + secret code + username. What happens next depends on the
+policy the admin chose:
 
-> Already have Node? Run `node -v` first.
-> - `v18`, `v20`, `v22`, `v24` → you're fine, skip this section.
-> - `v16` or lower → upgrade.
->
-> If you run the installer and it says **"Change, repair, or remove installation"**, that means
-> Node of that exact version is *already installed*. Click **Cancel** → **Yes**. Nothing is broken.
-
-### Installer options
-
-| Screen | What to do |
+| Policy | Behaviour |
 |---|---|
-| Welcome | **Next** |
-| End-User License Agreement | Tick *"I accept the terms"* → **Next** |
-| Destination Folder | **Leave default** (`C:\Program Files\nodejs\`) → **Next** |
-| Custom Setup | **Leave everything as-is.** All four features (Node.js runtime, npm package manager, Online documentation shortcuts, Add to PATH) should already be selected. **Do not deselect "Add to PATH"** — that's the one that makes `node` and `npm` work in your terminal. → **Next** |
-| Tools for Native Modules | **Leave the checkbox UNCHECKED.** This installs Chocolatey, Python and Visual Studio Build Tools (~3 GB) for compiling C++ addons. SyncSpace does not need any of it. → **Next** |
-| Ready to install | **Install** (approve the UAC prompt) |
-| Finish | **Finish** |
+| **Permission based** | Correct code is *not* enough. You land in a waiting room. The admin sees your request live and clicks Approve or Reject. |
+| **Join using password** | Correct code, straight in. No waiting, no approval. |
 
-### Verify
-
-Open a **new** Command Prompt or PowerShell:
-
-```powershell
-node -v
-npm -v
-```
-
-Expected:
-
-```
-v22.x.x     (or v20 / v24 — any of these is fine)
-10.x.x      (or 11.x — comes bundled, don't install it separately)
-```
-
-### If PowerShell blocks npm
-
-You may hit this the first time you run `npm install`:
-
-```
-npm : File C:\Program Files\nodejs\npm.ps1 cannot be loaded because running scripts
-is disabled on this system.
-```
-
-Nothing is broken — this is PowerShell's default security policy blocking the npm script wrapper.
-Fix it once, permanently, for your user account only (**no admin rights needed**):
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-```
-
-Type `Y` and press Enter. `RemoteSigned` = locally-created scripts run freely, downloaded scripts
-must be signed. This is the standard setting for Windows developers and it unblocks `npm`, `npx`,
-`vite`, `nodemon` and every other Node CLI tool for good.
-
-*(Alternative: just use Command Prompt (`cmd`) instead of PowerShell — it has no such restriction.
-But you'll keep hitting this wall in PowerShell, so the one-line fix above is worth it.)*
-
-### Ignore these warnings
-
-- `npm notice New major version of npm available!` — cosmetic. Upgrading is optional.
-- `npm audit: N vulnerabilities` — these live in dev-only build tooling, not in shipped code.
-  **Do not run `npm audit fix --force`.** It will upgrade React/Vite past the pinned versions and
-  break `react-konva`.
+The admin can switch policy at any moment from inside the workspace. Existing
+collaborators stay connected; only *future* joiners follow the new rule.
 
 ---
 
-## 2. Git
+## The security boundary (the part that actually matters)
 
-Git is version control. You need it to clone repos, track your work, and push to GitHub.
+Hiding the UI is not security. The real gate is the socket handshake.
 
-### Download
+Every socket carries a signed token, and `io.use()` decides what kind it is:
 
-1. Go to **<https://git-scm.com/download/win>**
-2. Download **64-bit Git for Windows Setup**. Run it (e.g. `Git-2.55.0.2-64-bit.exe`).
+- **Access token** → the socket joins `ws:<id>`, gets `sync-update` and `awareness-update` handlers. It can collaborate.
+- **Lobby ticket** → the socket joins `lobby:<id>:<requestId>` and **no sync handlers are registered for it at all**. A user in the waiting room cannot read the document, cannot see cursors, cannot discover who else is in the room, and cannot write — not because the UI hides it, but because the server never wired those events up for that socket.
 
-### Installer options
+When the admin approves, the server **pushes an access token down the waiting
+socket**. No polling, no refresh.
 
-The Git installer has *a lot* of screens. Most are safe to click straight through. Only three
-actually matter — they're marked ⚠️ below.
-
-| Screen | What to do |
-|---|---|
-| Information / License | **Next** |
-| Select Destination Location | **Leave default** → **Next** |
-| Select Components | **Leave defaults.** (Windows Explorer integration, Git LFS, file associations — all pre-ticked, all fine.) → **Next** |
-| Select Start Menu Folder | **Next** |
-| ⚠️ **Choosing the default editor** | Change the dropdown from *Vim* to **"Use Visual Studio Code as Git's default editor"**. If you don't, Git will one day drop you into Vim and you won't know how to get out. → **Next** |
-| ⚠️ **Adjusting the name of the initial branch** | Select **"Override the default branch name for new repositories"** and leave `main` in the box. GitHub uses `main`, so this saves you a rename later. → **Next** |
-| ⚠️ **Adjusting your PATH environment** | Select the **MIDDLE** option: **"Git from the command line and also from 3rd-party software"**. This is the one that makes `git` work in Command Prompt, PowerShell and VS Code. If you pick "Git Bash only", `git` will be *installed but invisible* to your terminal. → **Next** |
-| Choosing the SSH executable | **Use bundled OpenSSH** (default) → **Next** |
-| Choosing HTTPS transport backend | **Use the OpenSSL library** (default) → **Next** |
-| Configuring line ending conversions | **Checkout Windows-style, commit Unix-style** (default) → **Next** |
-| Configuring the terminal emulator | **Use MinTTY** (default) → **Next** |
-| Choose default behavior of `git pull` | **Fast-forward or merge** (default) → **Next** |
-| Choose a credential helper | **Git Credential Manager** (default) — this is what remembers your GitHub login → **Next** |
-| Configuring extra options | Leave both defaults ticked → **Next** |
-| Experimental options | **Leave everything UNCHECKED** → **Install** |
-
-### Verify
-
-**Close every terminal**, open a new one:
-
-```powershell
-git --version
-```
-
-Expected: `git version 2.55.0.windows.1` (or similar).
-
-### If it says `'git' is not recognized`
-
-1. **Did you open a fresh terminal?** The old one still has the old `PATH`. Close it, open a new
-   one, try again. This fixes it most of the time.
-
-2. Still failing? Check whether Git actually landed on disk:
-
-   ```powershell
-   dir "C:\Program Files\Git\cmd\git.exe"
-   ```
-
-   - **File is listed** → Git installed fine, but the PATH option was set wrong. Re-run the
-     installer and this time pick the **middle** option on the *"Adjusting your PATH environment"*
-     screen. It reconfigures over the existing install; nothing is lost.
-   - **File Not Found** → the install didn't complete. Run the installer again.
-
-### One-time Git config
-
-Set your identity so your commits are attributed correctly:
-
-```powershell
-git config --global user.name "Your Name"
-git config --global user.email "your.email@example.com"
-```
-
-Use the same email as your GitHub account.
+Admin authority is read from `socket.data`, which was set at handshake time from a
+*signed* token — never from the event payload. A member who forges `admin:approve`
+gets an error, not an approval. There is a test for exactly this.
 
 ---
 
-## 3. VS Code (recommended)
+## Run it
 
-Not strictly required — any editor works — but this is what the project assumes.
-
-1. **<https://code.visualstudio.com>** → Download for Windows → run the installer.
-2. On the **"Select Additional Tasks"** screen, tick:
-   - ✅ **Add "Open with Code" action to the Windows Explorer file context menu**
-   - ✅ **Add to PATH** ← this lets you type `code .` in a terminal to open the current folder
-
-Useful extensions: **ESLint**, **Prettier**, **MongoDB for VS Code**.
-
----
-
-## 4. MongoDB (optional for the demo, required later tho, but can leave it for now)
-
-You can skip this and still run the whole Milestone-0 demo — leave `MONGO_URI` blank in
-`backend/.env` and the server runs in memory-only mode. Everything syncs; it just forgets a room
-when you restart the server.
-
-You'll need it once you add auth, room permissions, and the replay timeline.
-
-### Install
-
-1. **<https://www.mongodb.com/try/download/community>**
-2. Set: **Version** = latest (8.x), **Platform** = Windows x64, **Package** = **msi**. Download.
-3. Run the `.msi`.
-
-| Screen | What to do |
-|---|---|
-| Setup Type | **Complete** (not Custom) |
-| ⚠️ **Service Configuration** | ✅ **Install MongoD as a Service** (default — leave it). ✅ **Run service as Network Service user**. Leave the Service Name (`MongoDB`), data directory and log directory at defaults. This makes MongoDB start automatically on every boot, so you never launch it by hand. |
-| Install MongoDB Compass | ✅ **Leave it ticked.** Compass is the GUI you'll use to actually *look at* your collections. It's a chunky download, so this step takes a few minutes. |
-
-### Verify
-
-```powershell
-sc query MongoDB
-```
-
-Look for `STATE : 4 RUNNING`.
-
-If it says `STOPPED`, open Command Prompt **as administrator** and run:
-
-```powershell
-net start MongoDB
-```
-
-Then open **MongoDB Compass** from the Start menu. The connection string is pre-filled:
-
-```
-mongodb://localhost:27017
-```
-
-Click **Connect**. You should see `admin`, `config` and `local`. That's a healthy empty install —
-your `syncspace` database doesn't exist yet, and that's correct. Mongoose creates it automatically
-the first time the backend writes a snapshot.
-
-### Wire it into SyncSpace
-
-In `backend/.env`:
-
-```env
-MONGO_URI=mongodb://127.0.0.1:27017/syncspace
-```
-
-Use **`127.0.0.1`, not `localhost`.** On some Windows setups `localhost` resolves to the IPv6
-address `::1` first, MongoDB isn't listening there, and you get a baffling `ECONNREFUSED`. The
-numeric IP sidesteps the problem entirely.
-
-Restart the backend. You should see:
-
-```
-[db] MongoDB connected: syncspace
-Persistence -> MongoDB
-```
-
----
-
-## Final check
-
-Open a **fresh** terminal and run all three:
-
-```powershell
-node -v
-npm -v
-git --version
-```
-
-Three version numbers, no errors → you're ready to install the project:
-
-```powershell
-cd syncspace
+```bash
 npm install --prefix backend
 npm install --prefix frontend
-npm install
+npm install          # root, for `npm run dev`
+
 npm run dev
 ```
+
+Open <http://localhost:5173>.
+
+`backend/.env`:
+
+```env
+PORT=5000
+CLIENT_ORIGIN=http://localhost:5173
+JWT_SECRET=change-me-to-a-long-random-string
+MONGO_URI=            # blank = memory-only. Works fine, forgets on restart.
+```
+
+**MongoDB is still optional.** With `MONGO_URI` blank, workspaces live in memory —
+every feature below works, they just reset when you restart the server. Point it at
+an Atlas cluster and the exact same code persists workspaces, members, requests and
+CRDT snapshots. No code changes.
+
+---
+
+## Demo script (three browser windows)
+
+1. **Window 1** → Create Workspace → name it, code `secret123`, username `Serah`, policy **Permission based**. Note the ID (e.g. `WS-7K2M9Q`). Draw something.
+2. **Window 2 (incognito)** → Join → paste the ID, code `secret123`, username `Thanushree`.
+   → She lands in the **waiting room**. She sees nothing of the board.
+3. **Window 1** → the Admin badge is pulsing. Open it → her request is there with a timestamp.
+   → Click **Approve**. Window 2 moves into the workspace *by itself*.
+4. **Window 1** → Admin panel → switch policy to **Join using password**.
+5. **Window 3** → Join with the same code → straight in, no waiting.
+6. **Window 1** → Admin panel → **Remove** someone. Their session dies instantly.
+
+Prove it headlessly:
+
+```bash
+cd backend
+node test-workspace.mjs   # 15 assertions incl. the security boundaries
+node test-sync.mjs        # Milestone 0 CRDT convergence, still passing
+```
+
+---
+
+## Files
+
+**New backend**
+
+```
+models/Workspace.js               workspace, members, pendingRequests
+services/workspaceStore.js        repository — MongoDB OR in-memory, same API
+services/workspaceService.js      ALL business rules, one implementation
+services/realtime.js              io hub: toWorkspace / toAdmin / toLobby
+controllers/workspaceController.js
+routes/workspaceRoutes.js
+middleware/authMiddleware.js      requireMember, requireAdmin
+utils/token.js                    access tokens vs lobby tickets
+utils/ids.js                      WS-7K2M9Q generator
+utils/validate.js                 sanitise, validate, rate-limit
+test-workspace.mjs
+```
+
+**Changed backend** — `services/socketService.js` (handshake auth + lobby + admin
+channel; the Yjs relay itself is byte-for-byte the original), `server.js`, `.env`.
+
+**New frontend** — `pages/Landing.jsx`, `pages/CreateWorkspace.jsx`,
+`pages/JoinWorkspace.jsx`, `pages/WaitingRoom.jsx`, `components/AdminPanel.jsx`,
+`components/Toast.jsx`, `hooks/useToasts.js`, `utils/api.js`, `utils/session.js`.
+
+**Changed frontend** — `pages/Workspace.jsx` (admin panel + guarded entry),
+`hooks/useCollaboration.js` (token auth + management channel; sync core unchanged),
+`utils/socket.js`, `App.jsx`, `assets/index.css`.
+
+**Removed** — `pages/Dashboard.jsx`. Its only job was "type a room ID to enter",
+which is exactly the insecure behaviour this milestone replaces. Its function now
+lives in `Landing` + `JoinWorkspace`.
+
+**Untouched** — `components/Canvas.jsx`, `components/Editor.jsx`, `monaco-setup.js`,
+`models/DocState.js`, `config/db.js`.
+
+---
+
+## REST API
+
+| Method | Route | Who |
+|---|---|---|
+| POST | `/api/workspaces` | anyone |
+| GET | `/api/workspaces/:id` | anyone (name + status only) |
+| POST | `/api/workspaces/:id/join` | anyone |
+| GET | `/api/workspaces/:id/me` | member |
+| GET | `/api/workspaces/:id/requests` | admin |
+| POST | `/api/workspaces/:id/requests/:reqId/approve` | admin |
+| POST | `/api/workspaces/:id/requests/:reqId/reject` | admin |
+| PATCH | `/api/workspaces/:id/policy` | admin |
+| DELETE | `/api/workspaces/:id/members/:userId` | admin |
+| POST | `/api/workspaces/:id/close` | admin |
+
+## Socket events
+
+**Client → server:** `sync-update`, `awareness-update`, `admin:approve`,
+`admin:reject`, `admin:set-policy`, `admin:remove-user`, `admin:pending`
+
+**Server → client:** `sync-update`, `awareness-update`, `room-info`,
+`join:waiting`, `join:requested`, `join:approved`, `join:rejected`, `join:pending`,
+`join:resolved`, `workspace:updated`, `workspace:policy-changed`,
+`workspace:removed`, `workspace:closed`
+
+---
+
+## Edge cases handled
+
+- **User refreshes the waiting page** → the ticket is in `sessionStorage`; on reconnect the server replays the current status (still waiting / already approved / rejected).
+- **Admin was offline when the request arrived** → requests are durable; the admin receives `join:pending` on connect.
+- **Admin changes policy while people are waiting** → they stay in the lobby and can still be approved by hand. Only *new* joiners follow the new rule.
+- **Username taken while someone waited** → approval fails with a clear message rather than creating a duplicate.
+- **Removed user** → membership is re-checked on *every* socket connect, so their token is dead immediately. No revocation list needed.
+- **Two users, same username** → refused within a workspace, allowed across different workspaces.
+- **Brute-forcing the secret code** → 10 attempts per IP per workspace per minute.
+- **Workspace-ID probing** → "no such workspace" and "wrong code" return the *same* message, so the endpoint is not an ID oracle.
+- **Server restart** → with Mongo, everything survives. Without it, workspaces reset (and the server says so at boot).
+
+## Still to do (Week 4 of the Axlero plan)
+
+`updatelogs` collection + the Replay slider. The auth and access-control half of
+Week 4 is now done.
