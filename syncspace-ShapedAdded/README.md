@@ -1,63 +1,252 @@
-# SyncSpace — Milestone 2.1 (drawing fixes)
+# SyncSpace
 
-Three targeted fixes on top of the Milestone 2 drawing system. No architecture
-changes; every existing tool, the workspace/auth system, and CRDT sync are intact.
-Frontend builds clean; 11 shape assertions + 15 workspace assertions pass.
+A modern real-time collaborative whiteboard application that enables multiple users to draw, brainstorm, design, and collaborate simultaneously within secure workspaces.
 
-## Issue 1 — Text tool no longer reverts to Select
+SyncSpace combines a responsive canvas, live synchronization, authentication, workspace management, and collaborative editing into a single web application suitable for team discussions, flowcharts, diagrams, wireframes, and visual brainstorming.
 
-**Root cause:** `startTextEditor()` ended with `setTool('select')`. Selecting Text
-then clicking opened the editor *and* flipped the toolbar back to Select in the
-same handler — it was a deliberate line, not an event side-effect.
+---
 
-**Fix + redesign (Canvas.jsx):**
-- The Text tool now begins a **click-drag** on mousedown that defines a text
-  region (a `kind: 'text'` drag), and opens the editor on mouseup *inside* that
-  region. The tool stays `text` throughout, so you can place several boxes in a
-  row. It only returns to Select after a box is actually committed.
-- The editor is a real `<textarea>` sized to the region: it **wraps** at the
-  region width and **grows downward** as content overflows (`scrollHeight`).
-- Enter inserts a newline (multiline); Ctrl/Cmd+Enter or Escape or click-outside
-  commits. Empty text is dropped/deleted. Double-click re-edits with formatting
-  preserved. `onMouseDown` on the textarea is stopped so editing never starts a
-  canvas drag. The Konva `Text` node already wraps at `width`, so saved text
-  reflows when the box is resized.
+# Features
 
-## Issue 2 — Circle / Star jump on placement and drag
+## Real-Time Collaboration
 
-**Root cause:** circle/ellipse/star position their Konva node at the **centre**
-(`x + w/2, y + h/2`), so `node.x()` returns the centre — but the app stores `x` as
-the **top-left**. `onDragEnd` wrote the centre straight into the top-left field,
-and the next render added `w/2` again, so **every drag shifted the shape by half
-its size**. Rect/diamond/triangle were fine because their node x equals their
-record x.
+- Multi-user collaborative whiteboard
+- Live synchronization across connected clients
+- CRDT-based conflict resolution
+- Instant updates without page refresh
+- Shared editing experience
 
-**Fix (ShapeNode.jsx, shapes.jsx, Canvas.jsx):** one shared predicate,
-`isCentered(type)`. Wherever a position is read back off a centred node
-(`onDragEnd`, `onTransformEnd`), subtract half-size to recover the stored
-top-left. Centred shapes still rotate in place (Konva draws them around their own
-centre, no offset needed). Verified with a headless create→drag→re-render test:
-circle now moves by the exact drag delta, identical to rectangle.
+---
 
-## Issue 3 — Connector Arrow tool removed completely
+## Workspace Management
 
-Removed from: the toolbar button, the keyboard shortcut (`a`), `SHAPE_GROUPS`
-(Flowchart "Connector" and the two Lines arrow variants), `isDraggableLine`, the
-`shapeIcon` arrow case, the `ShapeNode` arrow render case, the unused `Arrow`
-import from react-konva, and every `arrowVariant` reference in the creation code.
-`grep -rn "arrow"` over `components/` and `canvas/` returns nothing. Build has no
-unused-import or undefined-symbol warnings.
+- Create collaborative workspaces
+- Join existing workspaces
+- Secure workspace access
+- Admin-controlled workspace management
+- Persistent workspace data
 
-## Verify
+---
 
-```bash
-npm install --prefix backend && npm install --prefix frontend && npm install
-npm run dev
+## Authentication
 
-cd frontend && node test-shapes.mjs      # 11/11
-cd backend  && node test-workspace.mjs   # 15/15
+- User registration
+- Secure login
+- Protected routes
+- Session management
+- Authorization middleware
+
+---
+
+## Drawing Tools
+
+- Select Tool
+- Freehand Pencil
+- Rectangle
+- Circle
+- Ellipse
+- Triangle
+- Diamond
+- Star
+- Hexagon
+- Text Tool
+- Eraser
+
+---
+
+## Text Editing
+
+- Click-and-drag text box creation
+- Resizable text regions
+- Multi-line editing
+- Automatic word wrapping
+- Dynamic text box expansion
+- Double-click to edit existing text
+- Keyboard shortcuts for committing text
+
+---
+
+## Shape Editing
+
+- Drag and reposition objects
+- Resize shapes
+- Rotate supported shapes
+- Selection handles
+- Accurate positioning
+- Smooth transformations
+
+---
+
+## Canvas Features
+
+- Infinite drawing experience
+- Object selection
+- Layered rendering
+- Shape transformations
+- Smooth interactions
+- Responsive canvas
+
+---
+
+## Backend Features
+
+- REST API
+- Workspace management APIs
+- Authentication APIs
+- Database integration
+- Persistent document storage
+- Middleware-based security
+
+---
+
+# Tech Stack
+
+## Frontend
+
+- React
+- React Konva
+- JavaScript
+- HTML5
+- CSS3
+- Vite
+
+## Backend
+
+- Node.js
+- Express.js
+- MongoDB
+- Mongoose
+
+## Collaboration
+
+- CRDT Synchronization
+- Real-time document updates
+
+---
+
+# Project Structure
+
+```
+SyncSpace
+│
+├── frontend
+│   ├── Components
+│   ├── Canvas
+│   ├── Authentication
+│   ├── Workspace
+│   └── Drawing Tools
+│
+├── backend
+│   ├── Controllers
+│   ├── Models
+│   ├── Middleware
+│   ├── Routes
+│   ├── Config
+│   └── Database
+│
+└── package.json
 ```
 
-Manual: Text tool → drag a box → type a paragraph → watch it wrap and the box grow
-→ Ctrl+Enter. Draw a circle and a star → drag them → they stay under the cursor and
-don't jump. The Shapes menu and toolbar no longer show any arrow.
+---
+
+# Installation
+
+Clone the repository
+
+```bash
+git clone <repository-url>
+```
+
+Install all dependencies
+
+```bash
+npm install
+npm install --prefix frontend
+npm install --prefix backend
+```
+
+---
+
+# Run the Project
+
+Start both frontend and backend
+
+```bash
+npm run dev
+```
+
+Or start individually
+
+Frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+Backend
+
+```bash
+cd backend
+npm run dev
+```
+
+---
+
+# Main Functionalities
+
+- Create collaborative workspaces
+- Join shared workspaces
+- Draw using multiple tools
+- Add and edit text
+- Create diagrams
+- Resize and move shapes
+- Real-time synchronization
+- Persistent workspace storage
+- Secure authentication
+
+---
+
+# Recent Improvements
+
+- Redesigned text tool with drag-to-create text regions
+- Multi-line editable text boxes
+- Automatic word wrapping
+- Dynamic text box resizing
+- Improved editing workflow
+- Fixed circle positioning
+- Fixed star positioning
+- Accurate drag behavior for centered shapes
+- Improved transformation handling
+- Codebase cleanup
+- Enhanced drawing stability
+
+---
+
+# Future Enhancements
+
+- Undo / Redo history
+- Export as PNG
+- Export as PDF
+- Zoom and Pan
+- Sticky Notes
+- Flowchart connectors
+- Curved connectors
+- Collaboration cursors
+- Version history
+- Comments
+- File uploads
+- Image support
+- Presentation mode
+
+---
+
+# Contributors
+
+Developed as a collaborative real-time whiteboard application using React, Node.js, Express, MongoDB, and CRDT-based synchronization.
+
+---
+
+# License
+
+This project is intended for educational and collaborative development purposes.
