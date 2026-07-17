@@ -133,7 +133,7 @@ export default function Workspace() {
 
       <main className={'split' + (panelOpen ? ' with-panel' : '')}>
         <Canvas ydoc={ydoc} awareness={awareness} />
-        <Editor ydoc={ydoc} awareness={awareness} />
+        <Editor ydoc={ydoc} awareness={awareness} workspaceId={workspaceId} session={session} />
 
         {isAdmin && panelOpen && (
           <AdminPanel

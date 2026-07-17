@@ -6,7 +6,7 @@ import { SHAPE_GROUPS, shapeIcon } from '../canvas/shapes.jsx';
  * colour swatches — NOT a floating menu, NOT a sidebar, exactly as specified.
  * The Shapes button opens a grouped grid; everything else is a direct tool.
  */
-export default function Toolbar({ tool, setTool, onShape, onUndo, onRedo, canUndo, canRedo, onDelete, hasSelection }) {
+export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, onRedo, canUndo, canRedo, onDelete, hasSelection }) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -58,6 +58,30 @@ export default function Toolbar({ tool, setTool, onShape, onUndo, onRedo, canUnd
         {svg(<line x1="3" y1="16" x2="17" y2="4" stroke="currentColor" strokeWidth="1.8" />)}
       </ToolBtn>
 
+      {/* Connector: elbow-routed smart connector; Arrow: straight with a head.
+          Both create the SAME 'connector' record — they only differ in preset. */}
+      <button
+        className={'tool-btn' + (tool === 'connector' ? ' active' : '')}
+        onClick={() => onConnector({ routing: 'elbow' })}
+        title="Connector — drag between shapes (C)"
+      >
+        {svg(<>
+          <path d="M4 15 H10 V5 H14" fill="none" stroke="currentColor" strokeWidth="1.6" />
+          <rect x="2" y="13" width="4" height="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <polygon points="17.5,5 13.6,3.6 13.6,6.4" fill="currentColor" />
+        </>)}
+      </button>
+      <button
+        className="tool-btn"
+        onClick={() => onConnector({})}
+        title="Arrow (A)"
+      >
+        {svg(<>
+          <line x1="3" y1="16" x2="14" y2="5.5" stroke="currentColor" strokeWidth="1.8" />
+          <polygon points="17,4 12.4,5 15.8,8.6" fill="currentColor" />
+        </>)}
+      </button>
+
       {/* -------- Shapes dropdown -------- */}
       <div className="shapes-wrap" ref={menuRef}>
         <button
@@ -89,7 +113,7 @@ export default function Toolbar({ tool, setTool, onShape, onUndo, onRedo, canUnd
                         setShapesOpen(false);
                       }}
                     >
-                      <svg viewBox="0 0 20 20" width="22" height="22">{shapeIcon(s.type)}</svg>
+                      <svg viewBox="0 0 20 20" width="22" height="22">{shapeIcon(s.type, s.name)}</svg>
                       <span>{s.name}</span>
                     </button>
                   ))}

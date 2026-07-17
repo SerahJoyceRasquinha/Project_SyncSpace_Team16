@@ -12,7 +12,7 @@ import { shapePoints, heartPath, cloudPath } from './shapes.jsx';
  * The ref is forwarded so Canvas can attach the Konva Transformer to the node.
  */
 const ShapeNode = forwardRef(function ShapeNode(
-  { shape, draggable, onSelect, onDragStart, onDragEnd, onTransformEnd, onDblClick },
+  { shape, draggable, onSelect, onDragStart, onDragMove, onDragEnd, onTransformEnd, onDblClick },
   ref
 ) {
   const {
@@ -33,6 +33,7 @@ const ShapeNode = forwardRef(function ShapeNode(
     onMouseDown: onSelect,
     onTap: onSelect,
     onDragStart,
+    onDragMove,
     onDragEnd,
     onTransformEnd,
     onDblClick,

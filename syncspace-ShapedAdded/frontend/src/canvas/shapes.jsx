@@ -47,6 +47,42 @@ export function isDraggableLine(type) {
   return type === 'line';
 }
 
+export function isConnector(type) {
+  return type === 'connector';
+}
+
+/**
+ * Every connector starts from these. Presets from the Shapes menu / toolbar
+ * override individual fields — one type, one render path, many looks.
+ */
+export const CONNECTOR_DEFAULTS = () => ({
+  routing: 'straight',      // 'straight' | 'elbow' | 'curved'
+  curvature: 0.5,
+  cornerRadius: 8,
+  startHead: 'none',
+  endHead: 'filled',
+  waypoints: [],
+  stroke: '#111827',
+  strokeWidth: 2,
+  fill: 'transparent',
+  dash: null
+});
+
+export const HEAD_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'filled', label: 'Filled arrow' },
+  { value: 'hollow', label: 'Hollow arrow' },
+  { value: 'open', label: 'Open arrow' },
+  { value: 'block', label: 'Block' },
+  { value: 'bar', label: 'Bar' }
+];
+
+export const ROUTING_OPTIONS = [
+  { value: 'straight', label: 'Straight' },
+  { value: 'elbow', label: 'Elbow (zig-zag)' },
+  { value: 'curved', label: 'Curved' }
+];
+
 /**
  * Circle/ellipse/star are the shapes Konva draws around their CENTRE. Their node
  * is positioned at (x + w/2, y + h/2), so node.x() reports the centre and any
@@ -172,12 +208,67 @@ export const SHAPE_GROUPS = [
     shapes: [
       { type: 'line', name: 'Line' }
     ]
+  },
+  {
+    label: 'Connectors & Arrows',
+    shapes: [
+      { type: 'connector', name: 'Connector', preset: { endHead: 'none' } },
+      { type: 'connector', name: 'Elbow', preset: { routing: 'elbow' } },
+      { type: 'connector', name: 'Curved', preset: { routing: 'curved' } },
+      { type: 'connector', name: 'Arrow', preset: {} },
+      { type: 'connector', name: 'Double Arrow', preset: { startHead: 'filled' } },
+      { type: 'connector', name: 'Dashed Arrow', preset: { dash: [8, 6] } },
+      { type: 'connector', name: 'Dotted Arrow', preset: { dash: [2, 6] } },
+      { type: 'connector', name: 'Thick Arrow', preset: { strokeWidth: 5 } },
+      { type: 'connector', name: 'Thin Arrow', preset: { strokeWidth: 1 } },
+      { type: 'connector', name: 'Hollow Head', preset: { endHead: 'hollow' } },
+      { type: 'connector', name: 'Open Arrow', preset: { endHead: 'open' } },
+      { type: 'connector', name: 'Block Arrow', preset: { endHead: 'block' } }
+    ]
   }
 ];
 
 /** Small inline SVG preview for each toolbar button. */
-export function shapeIcon(type) {
+export function shapeIcon(type, name) {
   const s = { fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 };
+  if (type === 'connector') {
+    const head = <polygon points="17,4 12.6,5.2 15.8,8.4" fill="currentColor" />;
+    switch (name) {
+      case 'Connector': return <path d="M3 16 L17 4" {...s} />;
+      case 'Elbow': return <path d="M3 16 H10 V4 H17" {...s} />;
+      case 'Curved': return <><path d="M3 16 C 9 16 11 4 17 4" {...s} />{head}</>;
+      case 'Double Arrow': return (
+        <>
+          <line x1="5" y1="14.5" x2="15" y2="5.5" {...s} />
+          {head}
+          <polygon points="3,16 7.4,14.8 4.2,11.6" fill="currentColor" />
+        </>
+      );
+      case 'Dashed Arrow': return <><line x1="3" y1="16" x2="15" y2="5.5" {...s} strokeDasharray="4 2.5" />{head}</>;
+      case 'Dotted Arrow': return <><line x1="3" y1="16" x2="15" y2="5.5" {...s} strokeDasharray="1.5 3" />{head}</>;
+      case 'Thick Arrow': return <><line x1="3" y1="16" x2="14.5" y2="6" stroke="currentColor" strokeWidth="3.2" fill="none" />{head}</>;
+      case 'Thin Arrow': return <><line x1="3" y1="16" x2="15" y2="5.5" stroke="currentColor" strokeWidth="0.9" fill="none" />{head}</>;
+      case 'Hollow Head': return (
+        <>
+          <line x1="3" y1="16" x2="13.5" y2="6.8" {...s} />
+          <polygon points="17,4 12.6,5.2 15.8,8.4" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        </>
+      );
+      case 'Open Arrow': return (
+        <>
+          <line x1="3" y1="16" x2="17" y2="4" {...s} />
+          <path d="M12.6 4.4 L17 4 L16.6 8.4" {...s} strokeWidth="1.4" />
+        </>
+      );
+      case 'Block Arrow': return (
+        <>
+          <line x1="3" y1="16" x2="13" y2="7.2" {...s} />
+          <rect x="12.4" y="3.4" width="4.4" height="4.4" fill="currentColor" transform="rotate(-41 14.6 5.6)" />
+        </>
+      );
+      default: return <><line x1="3" y1="16" x2="15" y2="5.5" {...s} />{head}</>;
+    }
+  }
   switch (type) {
     case 'rect': return <rect x="3" y="5" width="14" height="10" {...s} />;
     case 'roundRect': return <rect x="3" y="5" width="14" height="10" rx="4" {...s} />;

@@ -47,5 +47,13 @@ export const api = {
       method: "PATCH",
       token,
       body: { permissionMode }
-    })
+    }),
+
+  /** Languages the execution service offers (drives the IDE dropdown). */
+  languages: (workspaceId, token) =>
+    request(`/workspaces/${workspaceId}/execute/languages`, { token }),
+
+  /** Run code on the server. Resolves { result } — see services/execution. */
+  execute: (workspaceId, token, body) =>
+    request(`/workspaces/${workspaceId}/execute`, { method: "POST", token, body })
 };

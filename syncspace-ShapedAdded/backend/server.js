@@ -7,6 +7,7 @@ import { connectDB } from "./config/db.js";
 import { setupSocket, setPersistence } from "./services/socketService.js";
 import { setPersistence as setStorePersistence } from "./services/workspaceStore.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
+import executeRoutes from "./routes/executeRoutes.js";
 
 const PORT = process.env.PORT || 5000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -14,13 +15,16 @@ const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
 const app = express();
 app.set("trust proxy", 1);
 app.use(cors({ origin: CLIENT_ORIGIN }));
-app.use(express.json({ limit: "100kb" }));
+// 1mb: the execute endpoint receives whole source files, which easily exceed
+// the old 100kb cap. Everything else still validates its own field sizes.
+app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "syncspace-backend", time: new Date() });
 });
 
 app.use("/api/workspaces", workspaceRoutes);
+app.use("/api/workspaces/:workspaceId/execute", executeRoutes);
 
 // 404 for unknown API routes
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));

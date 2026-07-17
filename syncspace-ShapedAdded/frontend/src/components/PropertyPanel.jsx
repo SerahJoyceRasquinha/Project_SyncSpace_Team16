@@ -1,4 +1,4 @@
-import { isFillable, isTextType } from '../canvas/shapes.jsx';
+import { isFillable, isTextType, isConnector, HEAD_OPTIONS, ROUTING_OPTIONS } from '../canvas/shapes.jsx';
 
 const FONTS = ['Inter', 'Arial', 'Calibri', 'Verdana', 'Roboto', 'Times New Roman', 'Courier New', 'Georgia', 'Trebuchet MS'];
 const FILLS = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#111827', '#ffffff', 'transparent'];
@@ -27,18 +27,78 @@ const styleToDash = (style) => {
  * calls patch(), which writes straight to Yjs, so a colour change is live for
  * everyone the instant it happens.
  */
-export default function PropertyPanel({ selected, patch, onDelete }) {
+export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, onReorder }) {
   if (!selected) return null;
   const s = selected;
   const isText = isTextType(s.type);
-  const canFill = isFillable(s.type) || isText;
+  const isConn = isConnector(s.type);
+  const canFill = !isConn && (isFillable(s.type) || isText);
 
   return (
     <div className="prop-panel">
       <div className="prop-head">
-        <span>{isText ? 'Text' : s.type}</span>
+        <span>{isText ? 'Text' : isConn ? 'Connector' : s.type}</span>
         <button className="prop-del" onClick={onDelete} title="Delete">Delete</button>
       </div>
+
+      {isConn && (
+        <>
+          <label className="prop-label">Routing</label>
+          <select className="prop-select" value={s.routing || 'straight'}
+            onChange={(e) => patch({ routing: e.target.value })}>
+            {ROUTING_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+
+          <div className="prop-row">
+            <div className="prop-col">
+              <label className="prop-label">Start head</label>
+              <select className="prop-select" value={s.startHead || 'none'}
+                onChange={(e) => patch({ startHead: e.target.value })}>
+                {HEAD_OPTIONS.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
+              </select>
+            </div>
+            <div className="prop-col">
+              <label className="prop-label">End head</label>
+              <select className="prop-select" value={s.endHead || 'filled'}
+                onChange={(e) => patch({ endHead: e.target.value })}>
+                {HEAD_OPTIONS.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {s.routing === 'curved' && (
+            <>
+              <label className="prop-label">Curvature</label>
+              <input type="range" min="0.1" max="1" step="0.05"
+                value={s.curvature ?? 0.5}
+                onChange={(e) => patch({ curvature: Number(e.target.value) })} />
+            </>
+          )}
+          {s.routing === 'elbow' && (
+            <>
+              <label className="prop-label">Corner radius</label>
+              <input type="range" min="0" max="24"
+                value={s.cornerRadius ?? 8}
+                onChange={(e) => patch({ cornerRadius: Number(e.target.value) })} />
+            </>
+          )}
+
+          <div className="prop-btn-row">
+            <button className="fmt" title="Remove all bend points"
+              onClick={() => patch({ waypoints: [] })}>Straighten</button>
+            <button className="fmt" title="Swap direction (and arrowheads)"
+              onClick={() => patch({
+                start: s.end, end: s.start,
+                waypoints: (() => {
+                  const flat = s.waypoints || [];
+                  const out = [];
+                  for (let i = flat.length - 2; i >= 0; i -= 2) out.push(flat[i], flat[i + 1]);
+                  return out;
+                })()
+              })}>Reverse</button>
+          </div>
+        </>
+      )}
 
       {isText && (
         <>
@@ -152,10 +212,26 @@ export default function PropertyPanel({ selected, patch, onDelete }) {
         value={s.opacity ?? 1}
         onChange={(e) => patch({ opacity: Number(e.target.value) })} />
 
-      <label className="prop-label">Rotation</label>
-      <input type="range" min="0" max="360"
-        value={Math.round(s.rotation || 0)}
-        onChange={(e) => patch({ rotation: Number(e.target.value) })} />
+      {!isConn && (
+        <>
+          <label className="prop-label">Rotation</label>
+          <input type="range" min="0" max="360"
+            value={Math.round(s.rotation || 0)}
+            onChange={(e) => patch({ rotation: Number(e.target.value) })} />
+        </>
+      )}
+
+      <label className="prop-label">Arrange</label>
+      <div className="prop-btn-row">
+        <button className="fmt" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
+        <button className="fmt" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
+        <button className="fmt" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
+        <button className={'fmt' + (s.locked ? ' on' : '')}
+          title={s.locked ? 'Unlock' : 'Lock (prevents moving/selecting)'}
+          onClick={() => patch({ locked: !s.locked })}>
+          {s.locked ? '🔒' : '🔓'}
+        </button>
+      </div>
 
       <div className="prop-meta">created by {s.creator || 'anon'}</div>
     </div>
