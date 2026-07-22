@@ -335,8 +335,11 @@ export default function Canvas({ ydoc, awareness }) {
           if (!file) continue;
           const reader = new FileReader();
           reader.onload = (ev) => {
-            const pos = worldPointer();
-            addImageShape(ev.target.result, pos);
+            // Place the pasted image at the centre of the visible viewport,
+            // since the paste event carries no cursor position.
+            const cx = (-view.x + size.width / 2) / view.scale;
+            const cy = (-view.y + size.height / 2) / view.scale;
+            addImageShape(ev.target.result, { x: cx, y: cy });
           };
           reader.readAsDataURL(file);
           break;
@@ -345,7 +348,7 @@ export default function Canvas({ ydoc, awareness }) {
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [editingText, addImageShape]);
+  }, [editingText, addImageShape, view, size]);
 
   // Drag-drop images onto the stage container
   useEffect(() => {
