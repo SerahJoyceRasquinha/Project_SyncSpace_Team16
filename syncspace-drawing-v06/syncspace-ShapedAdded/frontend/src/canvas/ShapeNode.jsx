@@ -254,10 +254,6 @@ const ShapeNode = forwardRef(function ShapeNode(
         />
       );
 
-    // ---- image (paste / drag-drop) ------------------------------------
-    case 'image':
-      return <ImageNode shape={shape} common={common} />;
-
     // ---- text ---------------------------------------------------------
     case 'text':
       return (
