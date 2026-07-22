@@ -32,8 +32,7 @@ export const COMMON_DEFAULTS = () => ({
 const FILLABLE = new Set([
   'rect', 'roundRect', 'diamond', 'parallelogram', 'trapezoid',
   'circle', 'ellipse', 'triangle', 'pentagon', 'hexagon', 'star',
-  'heart', 'cross', 'speechBubble', 'cloud',
-  'cylinder', 'document', 'database', 'image'
+  'heart', 'cross', 'speechBubble', 'cloud'
 ]);
 
 export function isFillable(type) {
@@ -140,21 +139,6 @@ export function shapePoints(type, w, h) {
         { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 0.7 }, { x: 0.35, y: 0.7 },
         { x: 0.2, y: 1 }, { x: 0.2, y: 0.7 }, { x: 0, y: 0.7 }
       ]);
-    case 'cylinder':
-      return P([
-        { x: 0, y: 0.15 }, { x: 1, y: 0 }, { x: 1, y: 0.85 }, { x: 0.5, y: 1 },
-        { x: 0, y: 0.85 }
-      ]);
-    case 'document':
-      return P([
-        { x: 0, y: 0 }, { x: 0.75, y: 0 }, { x: 1, y: 0.25 }, { x: 1, y: 1 },
-        { x: 0, y: 1 }
-      ]);
-    case 'database':
-      return P([
-        { x: 0, y: 0.15 }, { x: 0.5, y: 0 }, { x: 1, y: 0.15 },
-        { x: 1, y: 0.85 }, { x: 0.5, y: 1 }, { x: 0, y: 0.85 }
-      ]);
     default:
       return P([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]);
   }
@@ -216,10 +200,7 @@ export const SHAPE_GROUPS = [
       { type: 'trapezoid', name: 'Trapezoid' },
       { type: 'cross', name: 'Cross' },
       { type: 'speechBubble', name: 'Speech' },
-      { type: 'cloud', name: 'Cloud' },
-      { type: 'cylinder', name: 'Cylinder' },
-      { type: 'document', name: 'Document' },
-      { type: 'database', name: 'Database' }
+      { type: 'cloud', name: 'Cloud' }
     ]
   },
   {
@@ -304,30 +285,6 @@ export function shapeIcon(type, name) {
     case 'cross': return <polygon points="7,3 13,3 13,7 17,7 17,13 13,13 13,17 7,17 7,13 3,13 3,7 7,7" {...s} />;
     case 'speechBubble': return <path d="M3 4 H17 V13 H8 L5 17 V13 H3 Z" {...s} />;
     case 'cloud': return <path d="M6 15 A4 4 0 0 1 7 8 A5 5 0 0 1 15 8 A4 4 0 0 1 15 15 Z" {...s} />;
-    case 'cylinder': return (
-      <svg viewBox="0 0 20 20" width="22" height="22">
-        <ellipse cx="10" cy="4" rx="7" ry="2.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <line x1="3" y1="4" x2="3" y2="16" stroke="currentColor" strokeWidth="1.4" />
-        <line x1="17" y1="4" x2="17" y2="16" stroke="currentColor" strokeWidth="1.4" />
-        <ellipse cx="10" cy="16" rx="7" ry="2.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-      </svg>
-    );
-    case 'document': return (
-      <svg viewBox="0 0 20 20" width="22" height="22">
-        <path d="M4 3 H13 L17 7 V17 H4 Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-        <line x1="13" y1="3" x2="13" y2="7" stroke="currentColor" strokeWidth="1.4" />
-        <line x1="17" y1="7" x2="13" y2="7" stroke="currentColor" strokeWidth="1.4" />
-      </svg>
-    );
-    case 'database': return (
-      <svg viewBox="0 0 20 20" width="22" height="22">
-        <ellipse cx="10" cy="4.5" rx="7" ry="2.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <line x1="3" y1="4.5" x2="3" y2="15.5" stroke="currentColor" strokeWidth="1.4" />
-        <line x1="17" y1="4.5" x2="17" y2="15.5" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M3 10 C3 12.4 7 14 10 14 C13 14 17 12.4 17 10" fill="none" stroke="currentColor" strokeWidth="1.4" />
-        <ellipse cx="10" cy="15.5" rx="7" ry="2.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-      </svg>
-    );
     case 'line': return <line x1="3" y1="16" x2="17" y2="4" {...s} />;
     default: return <rect x="3" y="5" width="14" height="10" {...s} />;
   }
