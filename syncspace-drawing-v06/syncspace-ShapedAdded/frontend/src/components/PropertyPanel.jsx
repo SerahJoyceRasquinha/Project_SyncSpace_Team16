@@ -10,6 +10,8 @@ const BORDERS = [
   { label: 'None', value: 'none' }
 ];
 
+const FILL_TYPES = ['solid', 'linear', 'radial'];
+
 const dashToStyle = (dash) => {
   if (dash === null || dash === undefined) return 'solid';
   if (Array.isArray(dash) && dash[0] === 2) return 'dotted';
@@ -172,18 +174,68 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
                 key={c}
                 className={'mini-swatch' + (s.fill === c ? ' active' : '') + (c === 'transparent' ? ' none' : '')}
                 style={c === 'transparent' ? {} : { background: c }}
-                onClick={() => patch({ fill: c })}
+                onClick={() => { patch({ fillType: 'solid', fill: c }); }}
                 title={c}
               />
             ))}
             <input type="color" className="color-pick"
               value={s.fill && s.fill.startsWith('#') ? s.fill : '#6366f1'}
-              onChange={(e) => patch({ fill: e.target.value })} />
+              onChange={(e) => { patch({ fillType: 'solid', fill: e.target.value }); }} />
           </div>
+
+          {/* ---- Gradient fill controls ---- */}
+          {!isText && !isStroke && (
+            <>
+              <label className="prop-label">Fill type</label>
+              <div className="prop-btn-row">
+                {FILL_TYPES.map((ft) => (
+                  <button key={ft}
+                    className={'fmt' + ((s.fillType || 'solid') === ft ? ' on' : '')}
+                    onClick={() => {
+                      if (ft === 'solid') {
+                        patch({ fillType: 'solid', fillGradientStart: undefined, fillGradientEnd: undefined, fillGradientAngle: undefined });
+                      } else {
+                        patch({ fillType: ft, fillGradientStart: s.fillGradientStart || s.fill || '#6366f1', fillGradientEnd: s.fillGradientEnd || '#a5b4fc', fillGradientAngle: s.fillGradientAngle || 0 });
+                      }
+                    }}>
+                    {ft === 'linear' ? 'Linear' : ft === 'radial' ? 'Radial' : 'Solid'}
+                  </button>
+                ))}
+              </div>
+
+              {(s.fillType === 'linear' || s.fillType === 'radial') && (
+                <>
+                  <div className="prop-row">
+                    <div className="prop-col">
+                      <label className="prop-label">From</label>
+                      <input type="color" className="prop-color"
+                        value={s.fillGradientStart?.startsWith('#') ? s.fillGradientStart : '#6366f1'}
+                        onChange={(e) => patch({ fillGradientStart: e.target.value })} />
+                    </div>
+                    <div className="prop-col">
+                      <label className="prop-label">To</label>
+                      <input type="color" className="prop-color"
+                        value={s.fillGradientEnd?.startsWith('#') ? s.fillGradientEnd : '#a5b4fc'}
+                        onChange={(e) => patch({ fillGradientEnd: e.target.value })} />
+                    </div>
+                  </div>
+
+                  {s.fillType === 'linear' && (
+                    <>
+                      <label className="prop-label">Angle</label>
+                      <input type="range" min="0" max="360"
+                        value={s.fillGradientAngle ?? 0}
+                        onChange={(e) => patch({ fillGradientAngle: Number(e.target.value) })} />
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </>
       )}
 
-      {!isText && !isImage && (
+      {!isText && !isImage && !isConn && (
         <>
           <label className="prop-label">Stroke</label>
           <div className="swatch-row">
@@ -218,6 +270,90 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
             {BORDERS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
           </select>
         </>
+      )}
+
+      {/* ---- Corner radius (for rect / roundRect / image) ---- */}
+      {!isConn && !isStroke && !isText && (
+        <div className="prop-row">
+          <div className="prop-col">
+            <label className="prop-label">Corner radius</label>
+            <input type="range" min="0" max="50"
+              value={s.cornerRadius ?? 0}
+              onChange={(e) => patch({ cornerRadius: Number(e.target.value) })} />
+          </div>
+        </div>
+      )}
+
+      {/* ---- Drop shadow controls ---- */}
+      {!isConn && (
+        <div className="prop-row">
+          <div className="prop-col">
+            <label className="prop-label">Drop shadow</label>
+            <div className="prop-btn-row">
+              <button className={'fmt' + (s.shadowEnabled ? ' on' : '')}
+                onClick={() => patch({
+                  shadowEnabled: !s.shadowEnabled,
+                  ...(!s.shadowEnabled ? {
+                    shadowColor: s.shadowColor || '#000000',
+                    shadowBlur: s.shadowBlur || 10,
+                    shadowOffsetX: s.shadowOffsetX || 4,
+                    shadowOffsetY: s.shadowOffsetY || 4,
+                    shadowOpacity: s.shadowOpacity || 0.3
+                  } : {})
+                })}>
+                {s.shadowEnabled ? '✓ On' : 'Off'}
+              </button>
+            </div>
+            {s.shadowEnabled && (
+              <>
+                <div className="prop-row">
+                  <div className="prop-col">
+                    <label className="prop-label">Color</label>
+                    <input type="color" className="prop-color"
+                      value={s.shadowColor || '#000000'}
+                      onChange={(e) => patch({ shadowColor: e.target.value })} />
+                  </div>
+                  <div className="prop-col">
+                    <label className="prop-label">Blur</label>
+                    <input type="range" min="0" max="40"
+                      value={s.shadowBlur ?? 10}
+                      onChange={(e) => patch({ shadowBlur: Number(e.target.value) })} />
+                  </div>
+                </div>
+                <div className="prop-row">
+                  <div className="prop-col">
+                    <label className="prop-label">Offset X</label>
+                    <input type="range" min="-20" max="20"
+                      value={s.shadowOffsetX ?? 4}
+                      onChange={(e) => patch({ shadowOffsetX: Number(e.target.value) })} />
+                  </div>
+                  <div className="prop-col">
+                    <label className="prop-label">Offset Y</label>
+                    <input type="range" min="-20" max="20"
+                      value={s.shadowOffsetY ?? 4}
+                      onChange={(e) => patch({ shadowOffsetY: Number(e.target.value) })} />
+                  </div>
+                </div>
+                <label className="prop-label">Opacity</label>
+                <input type="range" min="0" max="1" step="0.05"
+                  value={s.shadowOpacity ?? 0.3}
+                  onChange={(e) => patch({ shadowOpacity: Number(e.target.value) })} />
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---- Blur filter ---- */}
+      {!isConn && (
+        <div className="prop-row">
+          <div className="prop-col">
+            <label className="prop-label">Blur</label>
+            <input type="range" min="0" max="20"
+              value={s.blurRadius ?? 0}
+              onChange={(e) => patch({ blurRadius: Number(e.target.value) })} />
+          </div>
+        </div>
       )}
 
       <label className="prop-label">Opacity</label>

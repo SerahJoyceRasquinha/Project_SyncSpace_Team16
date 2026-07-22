@@ -25,7 +25,25 @@ export const COMMON_DEFAULTS = () => ({
   opacity: 1,
   dash: null, // null=solid, [8,6]=dashed, [2,6]=dotted
   locked: false,
-  zIndex: 0
+  zIndex: 0,
+  // ---- gradient fill ------------------------------------------------
+  fillType: 'solid',        // 'solid' | 'linear' | 'radial'
+  fillGradientStart: '#6366f1',
+  fillGradientEnd: '#ec4899',
+  fillGradientAngle: 0,     // degrees for linear gradient direction
+  // ---- drop shadow ---------------------------------------------------
+  shadowEnabled: false,
+  shadowColor: '#000000',
+  shadowBlur: 10,
+  shadowOffsetX: 4,
+  shadowOffsetY: 4,
+  shadowOpacity: 0.3,
+  // ---- blur filter ---------------------------------------------------
+  blurRadius: 0,            // 0 = no blur
+  // ---- rounded corners (for rect / roundRect) ------------------------
+  cornerRadius: 0,          // 0 = sharp corners; applied when shape has width/height
+  // ---- image crop ----------------------------------------------------
+  crop: null                // { x, y, width, height } or null
 });
 
 // A shape is "hollow-by-default" (outline only) unless listed here.
