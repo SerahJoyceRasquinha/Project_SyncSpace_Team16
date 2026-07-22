@@ -384,7 +384,7 @@ input:focus { border-color: var(--accent); }
 .mini-swatch.none {
   background: repeating-conic-gradient(#ccc 0% 25%, #fff 0% 50%) 50% / 8px 8px;
 }
-.color-pick {
+.color-pick, .prop-color {
   width: 24px; height: 24px; padding: 0; border: 1px solid var(--line);
   border-radius: 5px; background: none; cursor: pointer;
 }
