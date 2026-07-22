@@ -34,7 +34,8 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
   const isText = isTextType(s.type);
   const isConn = isConnector(s.type);
   const isStroke = s.type === 'path';
-  const canFill = !isConn && (isFillable(s.type) || isText);
+  const isImage = s.type === 'image';
+  const canFill = !isConn && !isImage && (isFillable(s.type) || isText);
 
   return (
     <div className="prop-panel">
@@ -182,7 +183,7 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
         </>
       )}
 
-      {!isText && (
+      {!isText && !isImage && (
         <>
           <label className="prop-label">Stroke</label>
           <div className="swatch-row">

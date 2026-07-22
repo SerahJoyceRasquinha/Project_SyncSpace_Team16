@@ -1,5 +1,5 @@
-import { forwardRef, memo } from 'react';
-import { Line, Rect, Circle, Ellipse, Star, Path, Text } from 'react-konva';
+import { forwardRef, memo, useEffect, useRef, useState } from 'react';
+import { Line, Rect, Circle, Ellipse, Star, Path, Text, Image } from 'react-konva';
 import { shapePoints, heartPath, cloudPath } from './shapes.jsx';
 import { brushDef, dashArray, renderPoints, calligraphyRibbon } from './brushes.js';
 
@@ -175,6 +175,10 @@ const ShapeNode = forwardRef(function ShapeNode(
         />
       );
 
+    // ---- image (paste / drag-drop) ------------------------------------
+    case 'image':
+      return <ImageNode shape={shape} common={common} />;
+
     // ---- text ---------------------------------------------------------
     case 'text':
       return (
@@ -220,6 +224,65 @@ const ShapeNode = forwardRef(function ShapeNode(
 export default memo(ShapeNode, (prev, next) =>
   prev.shape === next.shape && prev.draggable === next.draggable
 );
+
+/**
+ * A Konva Image node that loads its source from `shape.src` (a data URL or blob URL).
+ * The image is stored as a base64 data URL in the Yjs doc so it syncs to all peers.
+ * Falls back to a placeholder rectangle while loading or on error.
+ */
+function ImageNode({ shape, common }) {
+  const imageRef = useRef(null);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!shape.src) { setError(true); return; }
+    setLoaded(false);
+    setError(false);
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      if (imageRef.current !== img) return; // avoid stale closure
+      setLoaded(true);
+    };
+    img.onerror = () => {
+      setError(true);
+    };
+    img.src = shape.src;
+    imageRef.current = img;
+    return () => {
+      // If the image was loaded via createObjectURL, revoke it on unmount
+      if (img.src && img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+      imageRef.current = null;
+    };
+  }, [shape.src]);
+
+  // While loading or on error, fall back to a placeholder
+  if (!loaded || error) {
+    return (
+      <Rect
+        {...common}
+        width={shape.width || 160}
+        height={shape.height || 120}
+        fill={error ? '#2a2a3a' : '#1a1a2a'}
+        stroke={error ? '#ef4444' : '#6366f1'}
+        strokeWidth={error ? 1.5 : 1}
+        strokeScaleEnabled={false}
+        dash={error ? [4, 4] : undefined}
+        cornerRadius={4}
+      />
+    );
+  }
+
+  return (
+    <Image
+      {...common}
+      image={imageRef.current}
+      width={shape.width || imageRef.current?.naturalWidth || 160}
+      height={shape.height || imageRef.current?.naturalHeight || 120}
+    />
+  );
+}
 
 /**
  * Non-interactive rendering of a stroke record, used for the local pen preview,
