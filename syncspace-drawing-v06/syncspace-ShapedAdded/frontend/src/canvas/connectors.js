@@ -98,6 +98,7 @@ export function shapeOutline(shape) {
     case 'text':
     case 'path':
     case 'line':
+    case 'image':
     case 'heart':
     case 'cloud':
     case 'rect':
@@ -285,7 +286,7 @@ const d2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 export function findSnapTarget(point, shapes, excludeIds = []) {
   let best = null;
   for (const s of shapes) {
-    if (s.type === 'connector' || s.type === 'path') continue;
+    if (s.type === 'connector' || s.type === 'path' || s.type === 'image') continue;
     if (excludeIds.includes(s.id)) continue;
 
     // 1. exact anchor dots win
