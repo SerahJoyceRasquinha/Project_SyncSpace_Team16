@@ -1,4 +1,4 @@
-import { isFillable, isTextType, isConnector, HEAD_OPTIONS, ROUTING_OPTIONS } from '../canvas/shapes.jsx';
+import { isFillable, isTextType, isConnector, isImageType, HEAD_OPTIONS, ROUTING_OPTIONS } from '../canvas/shapes.jsx';
 import { BRUSHES } from '../canvas/brushes.js';
 
 const FONTS = ['Inter', 'Arial', 'Calibri', 'Verdana', 'Roboto', 'Times New Roman', 'Courier New', 'Georgia', 'Trebuchet MS'];
@@ -35,13 +35,18 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
   const s = selected;
   const isText = isTextType(s.type);
   const isConn = isConnector(s.type);
+  // ROOT-CAUSE FIX: `isImage` was referenced further down (the Stroke
+  // section) but never declared, so rendering this panel for ANY non-text
+  // shape threw `ReferenceError: isImage is not defined` during React's
+  // render phase and unmounted the whole app.
+  const isImage = isImageType(s.type);
   const isStroke = s.type === 'path';
-  const canFill = !isConn && (isFillable(s.type) || isText);
+  const canFill = !isConn && !isImage && (isFillable(s.type) || isText);
 
   return (
     <div className="prop-panel">
       <div className="prop-head">
-        <span>{isText ? 'Text' : isConn ? 'Connector' : isStroke ? 'Stroke' : s.type}</span>
+        <span>{isText ? 'Text' : isConn ? 'Connector' : isImage ? 'Image' : isStroke ? 'Stroke' : s.type}</span>
         <button className="prop-del" onClick={onDelete} title="Delete">Delete</button>
       </div>
 

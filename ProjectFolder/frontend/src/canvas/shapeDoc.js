@@ -257,10 +257,30 @@ export function clearAll(ydoc) {
   ydoc.transact(() => arr.delete(0, arr.length));
 }
 
-/** Bring to front = highest zIndex. Used on selection so a shape is reachable. */
+/**
+ * Bring to front = highest zIndex. Called on selection so a shape is reachable.
+ *
+ * TWO FIXES over the naive version:
+ *  1. It is a NO-OP when the shape is already frontmost. Previously every single
+ *     click rewrote zIndex and updatedAt, producing a document mutation (and a
+ *     network broadcast) for an action that changed nothing.
+ *  2. It writes with the untracked LIVE_ORIGIN, so merely CLICKING a shape no
+ *     longer pushes an entry onto the UndoManager. Before this, Ctrl+Z after
+ *     selecting something undid the invisible z-order bump instead of the user's
+ *     last real edit, which made undo/redo feel broken.
+ * Explicit reordering still goes through reorderShape() and remains undoable.
+ */
 export function bringToFront(ydoc, id) {
   const arr = shapesArray(ydoc);
   let max = 0;
-  for (let i = 0; i < arr.length; i++) max = Math.max(max, arr.get(i).get('zIndex') || 0);
-  updateShape(ydoc, id, { zIndex: max + 1 });
+  let target = null;
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr.get(i);
+    const z = m.get('zIndex') || 0;
+    if (z > max) max = z;
+    if (m.get('id') === id) target = m;
+  }
+  if (!target) return;
+  if ((target.get('zIndex') || 0) >= max) return; // already on top: nothing to do
+  ydoc.transact(() => { target.set('zIndex', max + 1); }, LIVE_ORIGIN);
 }

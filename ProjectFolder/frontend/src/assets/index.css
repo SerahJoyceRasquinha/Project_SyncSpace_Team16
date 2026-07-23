@@ -557,3 +557,37 @@ input:focus { border-color: var(--accent); }
 .ed-hints { opacity: 0.8; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+
+/* ---- error boundary fallback -------------------------------------------
+   Shown instead of a blank page if any part of the UI fails to render. */
+.error-boundary {
+  max-width: 640px;
+  margin: 48px auto;
+  padding: 28px 32px;
+  border: 1px solid #ef4444;
+  border-radius: 12px;
+  background: #fff5f5;
+  color: #111827;
+  font-family: Inter, system-ui, sans-serif;
+}
+.error-boundary h2 { margin: 0 0 10px; font-size: 18px; }
+.error-boundary-msg {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: #fee2e2;
+  padding: 10px 12px;
+  border-radius: 6px;
+  word-break: break-word;
+}
+.error-boundary-hint { font-size: 13px; color: #6b7280; }
+.error-boundary-actions { display: flex; gap: 10px; margin-top: 16px; }
+.error-boundary-details { margin-top: 16px; font-size: 12px; }
+.error-boundary-details pre {
+  overflow: auto;
+  max-height: 260px;
+  background: #111827;
+  color: #e5e7eb;
+  padding: 12px;
+  border-radius: 6px;
+}

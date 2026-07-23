@@ -6,6 +6,8 @@ import PropertyPanel from './PropertyPanel.jsx';
 import BrushPanel from './BrushPanel.jsx';
 import ShapeNode, { PreviewStroke } from '../canvas/ShapeNode.jsx';
 import ConnectorNode from '../canvas/ConnectorNode.jsx';
+import { ShapeErrorBoundary } from './ErrorBoundary.jsx';
+import { normalizeShapes } from '../canvas/normalize.js';
 import {
   shapesArray, readShape, addShape, updateShape, updateShapeLive, updateMany,
   removeShapes, clearAll, bringToFront, duplicateShapes, reorderShape,
@@ -143,15 +145,19 @@ export default function Canvas({ ydoc, awareness }) {
   // ---- snapshot shapes from Yjs (local + remote) -----------------------
   useEffect(() => {
     const snapshot = () => {
-      const list = yshapes.toArray().map((m) => {
-        const s = readShape(m);
-        // legacy freehand: had { id, color, points } and no type
-        if (!s.type) {
-          s.type = 'path';
-          s.stroke = s.stroke || s.color || '#111827';
-        }
-        return s;
-      });
+      // normalizeShapes() is the single gate between the shared document and
+      // the renderer: it fills defaults, coerces every geometry field to a
+      // finite number, repairs legacy freehand records and de-duplicates ids,
+      // so a malformed or partially-initialised record can never reach Konva.
+      let list;
+      try {
+        list = normalizeShapes(yshapes.toArray().map(readShape));
+      } catch (err) {
+        // Reading the doc must never be able to kill the component. Keep the
+        // last good snapshot rather than tearing the board down.
+        console.error('[SyncSpace] failed to read shapes from the document:', err);
+        return;
+      }
       list.sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
       setShapes(list);
     };
@@ -213,7 +219,25 @@ export default function Canvas({ ydoc, awareness }) {
   const routeOf = useCallback(
     (conn) => {
       const c = connWithOverride(conn);
-      return { conn: c, route: connectorRoute(c, shapesById) };
+      try {
+        const route = connectorRoute(c, shapesById);
+        // a route needs at least two finite points to be drawable
+        if (Array.isArray(route) && route.length >= 2 &&
+            route.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))) {
+          return { conn: c, route };
+        }
+      } catch (err) {
+        console.error('[SyncSpace] connector routing failed for', c.id, err);
+      }
+      // Fall back to the endpoints' own cached coordinates so a connector
+      // whose target shape just vanished still draws instead of throwing.
+      return {
+        conn: c,
+        route: [
+          { x: c.start?.x || 0, y: c.start?.y || 0 },
+          { x: c.end?.x || 0, y: c.end?.y || 0 }
+        ]
+      };
     },
     [connWithOverride, shapesById]
   );
@@ -230,9 +254,16 @@ export default function Canvas({ ydoc, awareness }) {
         return s && !isConnector(s.type) && !s.locked;
       })
       .map((id) => nodeRefs.current.get(id))
-      .filter(Boolean);
-    tr.nodes(nodes);
-    tr.getLayer()?.batchDraw();
+      // a ref can outlive its node for one commit (shape deleted remotely mid-
+      // selection); binding a detached node makes Konva throw on the next draw
+      .filter((n) => n && typeof n.getLayer === 'function' && n.getLayer());
+    try {
+      tr.nodes(nodes);
+      tr.getLayer()?.batchDraw();
+    } catch (err) {
+      console.error('[SyncSpace] could not attach the transformer:', err);
+      tr.nodes([]);
+    }
   }, [selectedIds, shapes]);
 
   // publish my selection so peers can see it
@@ -250,8 +281,20 @@ export default function Canvas({ ydoc, awareness }) {
     : null;
 
   // ---------------------------------------------------------------- helpers
-  /** Pointer position in WORLD coordinates (accounts for zoom + pan). */
-  const worldPointer = () => stageRef.current.getRelativePointerPosition();
+  /**
+   * Pointer position in WORLD coordinates (accounts for zoom + pan).
+   * Konva's getRelativePointerPosition() returns null whenever the stage has
+   * no recorded pointer (pointer left the window, a synthetic/keyboard-driven
+   * event, a touch that already ended). Reading `.x` off that null was a real
+   * crash path — most easily hit by dragging a shape off the canvas edge,
+   * which fires mouseleave -> onStageMouseUp. Every caller now handles null.
+   */
+  const worldPointer = () => {
+    const stage = stageRef.current;
+    if (!stage) return null;
+    const p = stage.getRelativePointerPosition();
+    return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? p : null;
+  };
 
   const patchSelected = useCallback((patch) => {
     if (selectedIds.length === 1) updateShape(ydoc, selectedIds[0], patch);
@@ -382,6 +425,7 @@ export default function Canvas({ ydoc, awareness }) {
     const stage = e.target.getStage();
     const clickedEmpty = e.target === stage;
     const pos = worldPointer();
+    if (!pos) return;
 
     // panning (space held, or middle mouse) takes priority over every tool
     if (spaceDown || e.evt.button === 1) return;
@@ -453,6 +497,7 @@ export default function Canvas({ ydoc, awareness }) {
 
   const onStageMouseMove = () => {
     const pos = worldPointer();
+    if (!pos) return;
     awareness.setLocalStateField('cursor', { x: pos.x, y: pos.y });
 
     if (tool === 'eraser') setEraserPos(pos);
@@ -526,6 +571,15 @@ export default function Canvas({ ydoc, awareness }) {
 
     if (d.kind === 'pen') { commitDraft(); return; }
     if (d.kind === 'erase') { commitErase(); return; }
+
+    // Everything below needs a pointer position. If the pointer is already
+    // gone (mouseleave, cancelled touch) abandon the in-progress creation
+    // cleanly rather than committing a shape at a bogus coordinate.
+    if (!worldPointer()) {
+      setPreview(null);
+      setSnapHint(null);
+      return;
+    }
 
     // CONNECTOR: commit if it actually goes somewhere (length or attachment)
     if (d.kind === 'connector') {
@@ -610,7 +664,8 @@ export default function Canvas({ ydoc, awareness }) {
   const onWheel = (e) => {
     e.evt.preventDefault();
     const stage = stageRef.current;
-    const pointer = stage.getPointerPosition();
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return;
     const old = view.scale;
     const factor = e.evt.deltaY > 0 ? 1 / 1.08 : 1.08;
     const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, old * factor));
@@ -722,8 +777,9 @@ export default function Canvas({ ydoc, awareness }) {
   // ---------------------------------------------------------------- connectors
   /** Double-click a connector body: insert a bend point right there. */
   const onConnectorDblClick = (conn) => {
-    const { conn: c, route } = routeOf(conn);
     const pos = worldPointer();
+    if (!pos) return;
+    const { conn: c, route } = routeOf(conn);
     updateShape(ydoc, conn.id, { waypoints: insertWaypoint(c, route, pos) });
     setSelectedIds([conn.id]);
   };
@@ -864,6 +920,7 @@ export default function Canvas({ ydoc, awareness }) {
   const exportPNG = () => {
     setSelectedIds([]); // hide the transformer & handles first
     setTimeout(() => {
+      if (!stageRef.current) return; // unmounted before the timer fired
       const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
       const a = document.createElement('a');
       a.href = uri;
@@ -1004,7 +1061,7 @@ export default function Canvas({ ydoc, awareness }) {
                 // live erase preview: a masked stroke renders as its surviving
                 // runs so the user watches it break apart before releasing
                 if (eraseMask && s.type === 'path' && eraseMask.has(s.id)) {
-                  const runs = surviveRuns(s.points, eraseMask.get(s.id));
+                  const runs = surviveRuns(s.points || [], eraseMask.get(s.id));
                   return (
                     <Group key={s.id} listening={false}>
                       {runs.map((r, i) => (
@@ -1013,37 +1070,42 @@ export default function Canvas({ ydoc, awareness }) {
                     </Group>
                   );
                 }
+                // Every object is rendered inside its own boundary: if any
+                // single record cannot draw, IT is skipped and the stage,
+                // toolbar and every other shape keep rendering normally.
                 if (isConnector(s.type)) {
                   const { conn, route } = routeOf(s);
                   return (
-                    <ConnectorNode
-                      key={s.id}
-                      conn={conn}
-                      pts={displayPoints(conn, route)}
+                    <ShapeErrorBoundary key={s.id} shapeId={s.id} shapeType={s.type} resetKey={s}>
+                      <ConnectorNode
+                        conn={conn}
+                        pts={displayPoints(conn, route)}
+                        ref={(node) => {
+                          if (node) nodeRefs.current.set(s.id, node);
+                          else nodeRefs.current.delete(s.id);
+                        }}
+                        onSelect={(e) => onSelectShape(e, s.id)}
+                        onDblClick={() => onConnectorDblClick(s)}
+                      />
+                    </ShapeErrorBoundary>
+                  );
+                }
+                return (
+                  <ShapeErrorBoundary key={s.id} shapeId={s.id} shapeType={s.type} resetKey={s}>
+                    <ShapeNode
+                      shape={s}
                       ref={(node) => {
                         if (node) nodeRefs.current.set(s.id, node);
                         else nodeRefs.current.delete(s.id);
                       }}
+                      draggable={tool === 'select' && !s.locked && !panning}
                       onSelect={(e) => onSelectShape(e, s.id)}
-                      onDblClick={() => onConnectorDblClick(s)}
+                      onDragMove={(e) => onDragMove(e, s)}
+                      onDragEnd={(e) => onDragEnd(e, s)}
+                      onTransformEnd={(e) => onTransformEnd(e, s)}
+                      onDblClick={() => onShapeDblClick(s)}
                     />
-                  );
-                }
-                return (
-                  <ShapeNode
-                    key={s.id}
-                    shape={s}
-                    ref={(node) => {
-                      if (node) nodeRefs.current.set(s.id, node);
-                      else nodeRefs.current.delete(s.id);
-                    }}
-                    draggable={tool === 'select' && !s.locked && !panning}
-                    onSelect={(e) => onSelectShape(e, s.id)}
-                    onDragMove={(e) => onDragMove(e, s)}
-                    onDragEnd={(e) => onDragEnd(e, s)}
-                    onTransformEnd={(e) => onTransformEnd(e, s)}
-                    onDblClick={() => onShapeDblClick(s)}
-                  />
+                  </ShapeErrorBoundary>
                 );
               })}
 

@@ -70,6 +70,16 @@ export function isConnector(type) {
 }
 
 /**
+ * Images are their own render path (a Konva <Image> backed by an async loader),
+ * so they are excluded from the fill / stroke / gradient controls that only make
+ * sense for vector shapes. Declaring this predicate alongside the others is what
+ * the property panel was always missing.
+ */
+export function isImageType(type) {
+  return type === 'image';
+}
+
+/**
  * Every connector starts from these. Presets from the Shapes menu / toolbar
  * override individual fields — one type, one render path, many looks.
  */

@@ -254,6 +254,12 @@ const ShapeNode = forwardRef(function ShapeNode(
         />
       );
 
+    // ---- images -------------------------------------------------------
+    // ImageNode was previously defined but never referenced, so an image
+    // record fell through to `default:` and rendered as a bare rectangle.
+    case 'image':
+      return <ImageNode shape={shape} common={common} />;
+
     // ---- text ---------------------------------------------------------
     case 'text':
       return (
@@ -326,10 +332,11 @@ function ImageNode({ shape, common }) {
       setLoaded(true);
     };
     img.onerror = () => {
+      if (imageRef.current !== img) return;
       setError(true);
     };
+    imageRef.current = img;   // set BEFORE .src so onload never sees a stale ref
     img.src = shape.src;
-    imageRef.current = img;
     return () => {
       if (img.src && img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
       imageRef.current = null;

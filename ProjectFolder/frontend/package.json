@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --experimental-loader=./test-support/loader.mjs test-rendering.mjs",
+    "test:render": "node --experimental-loader=./test-support/loader.mjs test-rendering.mjs",
+    "test:shapes": "node test-shapes.mjs",
+    "test:connectors": "node test-connectors.mjs",
+    "test:brushes": "node test-brushes.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
@@ -23,6 +28,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^24.1.0",
     "vite": "^5.4.8"
   }
 }
