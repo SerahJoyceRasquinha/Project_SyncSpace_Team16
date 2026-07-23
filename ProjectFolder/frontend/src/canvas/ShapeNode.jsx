@@ -273,6 +273,10 @@ const ShapeNode = forwardRef(function ShapeNode(
         />
       );
 
+    // ---- images (user-uploaded or stickers) ---------------------------
+    case 'image':
+      return <ImageNode shape={shape} common={common} />;
+
     // ---- everything else is a closed polygon outline ------------------
     default:
       return (
