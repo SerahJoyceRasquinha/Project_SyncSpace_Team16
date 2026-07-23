@@ -239,7 +239,7 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
         </>
       )}
 
-      {!isText && !isImage && !isConn && (
+      {!isText && s.type !== 'image' && !isConn && (
         <>
           <label className="prop-label">Stroke</label>
           <div className="swatch-row">

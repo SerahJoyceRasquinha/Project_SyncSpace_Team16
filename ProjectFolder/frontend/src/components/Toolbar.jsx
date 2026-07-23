@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { SHAPE_GROUPS, shapeIcon } from '../canvas/shapes.jsx';
+import { SHAPE_GROUPS, STICKER_CATEGORIES, shapeIcon } from '../canvas/shapes.jsx';
 
 /**
  * The top toolbar. Lives in the whiteboard pane header, alongside the existing
  * colour swatches — NOT a floating menu, NOT a sidebar, exactly as specified.
  * The Shapes button opens a grouped grid; everything else is a direct tool.
  */
-export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, onRedo, canUndo, canRedo, onDelete, hasSelection }) {
+export default function Toolbar({ tool, setTool, onShape, onConnector, onImage, onSticker, onUndo, onRedo, canUndo, canRedo, onDelete, hasSelection }) {
   const [shapesOpen, setShapesOpen] = useState(false);
+  const [stickersOpen, setStickersOpen] = useState(false);
   const menuRef = useRef(null);
+  const stickerMenuRef = useRef(null);
+  const fileRef = useRef(null);
 
   useEffect(() => {
     if (!shapesOpen) return;
@@ -18,6 +21,15 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, o
     window.addEventListener('mousedown', close);
     return () => window.removeEventListener('mousedown', close);
   }, [shapesOpen]);
+
+  useEffect(() => {
+    if (!stickersOpen) return;
+    const close = (e) => {
+      if (stickerMenuRef.current && !stickerMenuRef.current.contains(e.target)) setStickersOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [stickersOpen]);
 
   const ToolBtn = ({ id, label, children }) => (
     <button
@@ -32,6 +44,13 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, o
   const svg = (child) => (
     <svg viewBox="0 0 20 20" width="18" height="18">{child}</svg>
   );
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    onImage(file);
+    e.target.value = ''; // reset so the same file can be picked again
+  };
 
   return (
     <div className="toolbar">
@@ -65,8 +84,7 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, o
         {svg(<line x1="3" y1="16" x2="17" y2="4" stroke="currentColor" strokeWidth="1.8" />)}
       </ToolBtn>
 
-      {/* Connector: elbow-routed smart connector; Arrow: straight with a head.
-          Both create the SAME 'connector' record — they only differ in preset. */}
+      {/* Connector: elbow-routed smart connector; Arrow: straight with a head. */}
       <button
         className={'tool-btn' + (tool === 'connector' ? ' active' : '')}
         onClick={() => onConnector({ routing: 'elbow' })}
@@ -122,6 +140,70 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onUndo, o
                     >
                       <svg viewBox="0 0 20 20" width="22" height="22">{shapeIcon(s.type, s.name)}</svg>
                       <span>{s.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* -------- Image upload -------- */}
+      <button
+        className="tool-btn"
+        onClick={() => fileRef.current?.click()}
+        title="Upload image from your computer"
+      >
+        {svg(<>
+          <rect x="3" y="5" width="14" height="11" fill="none" stroke="currentColor" strokeWidth="1.5" rx="2" />
+          <circle cx="10" cy="9" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M3 15 L7 10 L10 13 L14 8 L17 12 L17 16 H3 Z" fill="currentColor" opacity="0.7" />
+        </>)}
+        <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
+          onChange={handleFileChange} />
+      </button>
+
+      {/* -------- Stickers dropdown (categorized & attractive) -------- */}
+      <div className="shapes-wrap" ref={stickerMenuRef}>
+        <button
+          className={'tool-btn wide' + (stickersOpen ? ' active' : '')}
+          onClick={() => setStickersOpen((o) => !o)}
+          title="Stickers"
+        >
+          {svg(<>
+            <rect x="3" y="6" width="14" height="10" rx="3" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M7 12 L10 8 L13 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </>)}
+          <span className="caret">▾</span>
+        </button>
+
+        {stickersOpen && (
+          <div className="shapes-menu stickers-menu">
+            <div className="stickers-header">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="6" width="18" height="14" rx="3" />
+                <path d="M9 13 L12 10 L15 13" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M21 10 H16 A3 3 0 0 0 13 13 V20" />
+              </svg>
+              <span>Sticker Gallery</span>
+            </div>
+            {STICKER_CATEGORIES.map((cat) => (
+              <div key={cat.label} className="sticker-category">
+                <div className="sticker-category-label">{cat.label}</div>
+                <div className="sticker-grid">
+                  {cat.stickers.map((st) => (
+                    <button
+                      key={st.name}
+                      className="sticker-cell"
+                      title={st.name}
+                      onClick={() => {
+                        onSticker(st);
+                        setStickersOpen(false);
+                      }}
+                    >
+                      <span className="sticker-emoji" style={{ '--sticker-tint': st.color }}>{st.emoji}</span>
+                      <span className="sticker-name">{st.name}</span>
                     </button>
                   ))}
                 </div>

@@ -69,6 +69,65 @@ export function isConnector(type) {
   return type === 'connector';
 }
 
+export function isImageType(type) {
+  return type === 'image';
+}
+
+// ---- Stickers -----------------------------------------------------------
+/**
+ * Built-in sticker presets organized by category.
+ * Each sticker has a name, emoji (for preview), and SVG data URL.
+ * The `color` is used as a decorative background tint in the picker.
+ */
+export const STICKER_CATEGORIES = [
+  {
+    label: 'Emoji & Reactions',
+    stickers: [
+      { name: 'Thumbs Up', emoji: '👍', color: '#3b82f6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E👍%3C/text%3E%3C/svg%3E' },
+      { name: 'Heart Eyes', emoji: '😍', color: '#ec4899', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E😍%3C/text%3E%3C/svg%3E' },
+      { name: 'Clapping', emoji: '👏', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E👏%3C/text%3E%3C/svg%3E' },
+      { name: 'Laughing', emoji: '😂', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E😂%3C/text%3E%3C/svg%3E' },
+      { name: 'Cool', emoji: '😎', color: '#8b5cf6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E😎%3C/text%3E%3C/svg%3E' },
+      { name: 'Party', emoji: '🎉', color: '#ec4899', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🎉%3C/text%3E%3C/svg%3E' },
+      { name: 'Fire', emoji: '🔥', color: '#ef4444', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🔥%3C/text%3E%3C/svg%3E' },
+      { name: 'Star Eyes', emoji: '🤩', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🤩%3C/text%3E%3C/svg%3E' },
+      { name: 'Crying', emoji: '😭', color: '#3b82f6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E😭%3C/text%3E%3C/svg%3E' },
+      { name: 'Mind Blown', emoji: '🤯', color: '#ef4444', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🤯%3C/text%3E%3C/svg%3E' },
+      { name: 'Rocket', emoji: '🚀', color: '#3b82f6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🚀%3C/text%3E%3C/svg%3E' },
+      { name: 'Star', emoji: '⭐', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E⭐%3C/text%3E%3C/svg%3E' },
+    ]
+  },
+  {
+    label: 'Indicators',
+    stickers: [
+      { name: 'Check', emoji: '✅', color: '#10b981', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E✅%3C/text%3E%3C/svg%3E' },
+      { name: 'Cross', emoji: '❌', color: '#ef4444', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E❌%3C/text%3E%3C/svg%3E' },
+      { name: 'Warning', emoji: '⚠️', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E⚠️%3C/text%3E%3C/svg%3E' },
+      { name: 'Info', emoji: 'ℹ️', color: '#3b82f6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3Eℹ️%3C/text%3E%3C/svg%3E' },
+      { name: 'Question', emoji: '❓', color: '#8b5cf6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E❓%3C/text%3E%3C/svg%3E' },
+      { name: 'Lock', emoji: '🔒', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🔒%3C/text%3E%3C/svg%3E' },
+      { name: 'Target', emoji: '🎯', color: '#ef4444', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🎯%3C/text%3E%3C/svg%3E' },
+      { name: 'Eye', emoji: '👀', color: '#6366f1', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E👀%3C/text%3E%3C/svg%3E' },
+    ]
+  },
+  {
+    label: 'Objects',
+    stickers: [
+      { name: 'Lightbulb', emoji: '💡', color: '#f59e0b', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E💡%3C/text%3E%3C/svg%3E' },
+      { name: 'Pencil', emoji: '✏️', color: '#6366f1', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E✏️%3C/text%3E%3C/svg%3E' },
+      { name: 'Chart', emoji: '📊', color: '#10b981', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E📊%3C/text%3E%3C/svg%3E' },
+      { name: 'Bug', emoji: '🐛', color: '#ef4444', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🐛%3C/text%3E%3C/svg%3E' },
+      { name: 'Gear', emoji: '⚙️', color: '#8b5cf6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E⚙️%3C/text%3E%3C/svg%3E' },
+      { name: 'Idea Cloud', emoji: '💭', color: '#3b82f6', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E💭%3C/text%3E%3C/svg%3E' },
+      { name: 'Bookmark', emoji: '🔖', color: '#ec4899', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🔖%3C/text%3E%3C/svg%3E' },
+      { name: 'Magnifier', emoji: '🔍', color: '#10b981', svg: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%2280%22 font-size=%2280%22%3E🔍%3C/text%3E%3C/svg%3E' },
+    ]
+  }
+];
+
+/** Flat list of all stickers (for backwards compatibility in Toolbar). */
+export const STICKERS = STICKER_CATEGORIES.flatMap(c => c.stickers);
+
 /**
  * Images are their own render path (a Konva <Image> backed by an async loader),
  * so they are excluded from the fill / stroke / gradient controls that only make

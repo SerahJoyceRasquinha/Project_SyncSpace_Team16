@@ -68,6 +68,7 @@ export default function Canvas({ ydoc, awareness }) {
   const [pendingShape, setPendingShape] = useState(null); // { type } chosen from Shapes menu
   const [connPreset, setConnPreset] = useState(null);     // preset for the connector tool
   const [selectedIds, setSelectedIds] = useState([]);
+  const [pendingSticker, setPendingSticker] = useState(null); // { svg, name } pending placement
   const [preview, setPreview] = useState(null); // live drag-to-create ghost
   const [editingText, setEditingText] = useState(null); // { id?, x, y, value, ... }
   const [size, setSize] = useState({ width: 800, height: 600 });
@@ -337,6 +338,51 @@ export default function Canvas({ ydoc, awareness }) {
     snap
       ? { shapeId: snap.shapeId, anchor: snap.anchor, x: snap.x, y: snap.y }
       : { x: point.x, y: point.y };
+
+  // ---------------------------------------------------------------- image / sticker
+  /** Upload an image file, convert to base64, and place it on the canvas. */
+  const handleImageUpload = useCallback((file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      // Max 5 MB for shared images so the Yjs doc doesn't bloat
+      if (dataUrl.length > 5 * 1024 * 1024) {
+        toast?.('Image is too large. Max 5 MB recommended.', 'error');
+        return;
+      }
+      // Place in the centre-ish of the current viewport
+      const cx = (-view.x / view.scale) + (size.width / view.scale) / 2 - 80;
+      const cy = (-view.y / view.scale) + (size.height / view.scale) / 2 - 60;
+      const id = addShape(ydoc, me, {
+        type: 'image',
+        src: dataUrl,
+        x: cx, y: cy,
+        width: 160, height: 120,
+        stroke: 'transparent',
+        strokeWidth: 0
+      });
+      setSelectedIds([id]);
+    };
+    reader.readAsDataURL(file);
+  }, [ydoc, me, view, size]);
+
+  /** Place a sticker (SVG data URL) on the canvas. */
+  const handleSticker = useCallback((sticker) => {
+    if (!sticker?.svg) return;
+    const cx = (-view.x / view.scale) + (size.width / view.scale) / 2 - 50;
+    const cy = (-view.y / view.scale) + (size.height / view.scale) / 2 - 50;
+    const id = addShape(ydoc, me, {
+      type: 'image',
+      src: sticker.svg,
+      name: sticker.name,
+      x: cx, y: cy,
+      width: 100, height: 100,
+      stroke: 'transparent',
+      strokeWidth: 0
+    });
+    setSelectedIds([id]);
+  }, [ydoc, me, view, size]);
 
   // ---------------------------------------------------------------- pen / eraser
   /** Turn the persisted pen settings into a stroke-record template. */
@@ -1016,6 +1062,8 @@ export default function Canvas({ ydoc, awareness }) {
             else { setPendingShape(s); setTool('shape'); }
           }}
           onConnector={startConnectorTool}
+          onImage={handleImageUpload}
+          onSticker={handleSticker}
           onUndo={() => undoMgr.undo()}
           onRedo={() => undoMgr.redo()}
           canUndo={undoState.canUndo}

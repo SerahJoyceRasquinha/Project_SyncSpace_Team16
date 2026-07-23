@@ -327,6 +327,107 @@ input:focus { border-color: var(--accent); }
 .shape-cell:hover { border-color: var(--accent); color: #c7d2fe; }
 .shape-cell span { font-size: 8.5px; color: var(--muted); text-align: center; line-height: 1.1; }
 
+/* =========================== stickers menu =========================== */
+.stickers-menu {
+  width: 320px !important;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 0 !important;
+}
+.stickers-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 14px 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 2;
+  border-radius: 12px 12px 0 0;
+}
+.sticker-category {
+  padding: 8px 10px 6px;
+}
+.sticker-category + .sticker-category {
+  border-top: 1px solid var(--line);
+  margin-top: 0;
+}
+.sticker-category-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin-bottom: 6px;
+  padding-left: 2px;
+}
+.sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+}
+.sticker-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 2px 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  color: var(--text);
+  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+}
+.sticker-cell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(circle at center, var(--sticker-tint, var(--accent)) 0%, transparent 70%);
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.sticker-cell:hover::before {
+  opacity: 0.12;
+}
+.sticker-cell:hover {
+  border-color: var(--sticker-tint, var(--accent));
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.2);
+}
+.sticker-cell:active {
+  transform: translateY(0) scale(0.95);
+}
+.sticker-emoji {
+  font-size: 22px;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));
+  transition: transform 0.15s ease;
+}
+.sticker-cell:hover .sticker-emoji {
+  transform: scale(1.15);
+}
+.sticker-name {
+  font-size: 7.5px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.1;
+  position: relative;
+  z-index: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .canvas-body { flex: 1; display: flex; gap: 10px; padding: 10px; min-height: 0; }
 .stage-container { flex: 1; position: relative; background: #fff; border-radius: 10px; overflow: hidden; }
 .canvas-footer {
