@@ -69,6 +69,11 @@ export function isConnector(type) {
   return type === 'connector';
 }
 
+/**
+ * Images are their own render path (a Konva <Image> backed by an async loader),
+ * so they are excluded from the fill / stroke / gradient controls that only make
+ * sense for vector shapes.
+ */
 export function isImageType(type) {
   return type === 'image';
 }
@@ -127,16 +132,6 @@ export const STICKER_CATEGORIES = [
 
 /** Flat list of all stickers (for backwards compatibility in Toolbar). */
 export const STICKERS = STICKER_CATEGORIES.flatMap(c => c.stickers);
-
-/**
- * Images are their own render path (a Konva <Image> backed by an async loader),
- * so they are excluded from the fill / stroke / gradient controls that only make
- * sense for vector shapes. Declaring this predicate alongside the others is what
- * the property panel was always missing.
- */
-export function isImageType(type) {
-  return type === 'image';
-}
 
 /**
  * Every connector starts from these. Presets from the Shapes menu / toolbar

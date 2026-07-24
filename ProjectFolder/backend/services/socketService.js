@@ -4,6 +4,7 @@ import { verifyToken, signAccessToken } from '../utils/token.js';
 import { findWorkspace, findMember, pendingOf, publicView } from './workspaceStore.js';
 import * as svc from './workspaceService.js';
 import * as rt from './realtime.js';
+import * as logs from './updateLogService.js';
 
 /**
  * Blueprint Part 13 - Socket Events, now gated.
@@ -17,6 +18,13 @@ import * as rt from './realtime.js';
  *   kind = 'lobby'   -> someone awaiting approval. Joins lobby:<id>:<req> ONLY.
  *                       No sync handler is even registered for them, so they
  *                       cannot see the document, the cursors, or the peer list.
+ *
+ * Replay (Blueprint 8.4 + Part 13) rides the same relay rather than adding a
+ * second channel: every update that is broadcast is also appended to the room's
+ * update log, and 'get-replay-logs' hands that log back. Because the handler is
+ * registered inside the member branch, history inherits the existing access
+ * boundary exactly - a lobby socket cannot read the past any more than the
+ * present.
  */
 
 // workspaceId -> { doc, dirty, timer }
@@ -42,6 +50,27 @@ async function getRoom(workspaceId) {
     } catch (err) {
       console.warn('[yjs] restore failed:', err.message);
     }
+  }
+
+  // ---- replay baseline ------------------------------------------------
+  // A room can legitimately have a docstate snapshot but an EMPTY update log:
+  // the board was drawn before this feature existed, or the log was cleared.
+  // Replaying that room would start from a blank canvas and then jump, which
+  // would be a lie about its history. So when we restore a non-empty document
+  // into a room with no log, we record the restored state as seq 0 - replay
+  // then begins at "everything that existed when recording started", which is
+  // both true and the only thing we can honestly claim.
+  //
+  // An empty Y.Doc encodes to exactly 2 bytes, so this seeds nothing for a
+  // genuinely fresh room.
+  try {
+    const state = Y.encodeStateAsUpdate(doc);
+    if (state.length > 2 && (await logs.countLogs(workspaceId)) === 0) {
+      await logs.appendUpdate(workspaceId, state, { username: 'snapshot' });
+      console.log(`[replay] "${workspaceId}" log seeded from the restored snapshot`);
+    }
+  } catch (err) {
+    console.warn('[replay] baseline seed skipped:', err.message);
   }
 
   const entry = { doc, dirty: false, timer: null };
@@ -200,10 +229,51 @@ export function setupSocket(io) {
       const room = await getRoom(workspaceId);
       Y.applyUpdate(room.doc, bytes, socket.id);
       socket.to(rt.roomOf(workspaceId)).emit('sync-update', bytes);
+
+      // Blueprint 8.4 - history is appended AFTER the relay, on purpose.
+      // Collaborators must never wait on a database write to see each other's
+      // edits, and appendUpdate() swallows its own errors, so a broken log can
+      // slow down or disable replay but can never stall or break live sync.
+      logs.appendUpdate(workspaceId, bytes, { userId, username });
     });
 
     socket.on('awareness-update', (update) => {
       socket.to(rt.roomOf(workspaceId)).emit('awareness-update', new Uint8Array(update));
+    });
+
+    // ---- Blueprint Part 13: replay ------------------------------------
+    // Registered HERE, inside the member branch, which is the whole access
+    // story: a lobby socket returned long before this line, so someone waiting
+    // for approval cannot ask for the history any more than they can ask for
+    // the document. The room is read from socket.data (set from the signed
+    // token at handshake), never from the request, so this cannot be used to
+    // read another workspace's history either.
+    socket.on('get-replay-logs', async (_payload, ack) => {
+      try {
+        const entries = await logs.getLogs(workspaceId);
+        const response = {
+          workspaceId,
+          count: entries.length,
+          capped: entries.length >= logs.MAX_LOGS_PER_ROOM,
+          entries: entries.map((e) => ({
+            seq: e.seq,
+            // ms since epoch: survives JSON, and the client only ever formats it
+            timestamp: new Date(e.timestamp).getTime(),
+            username: e.username || null,
+            size: e.payload.length,
+            payload: Buffer.from(e.payload)
+          }))
+        };
+        // Emit the Blueprint event AND answer the acknowledgement, so either
+        // calling convention works for whoever consumes this next.
+        socket.emit('replay-logs', response);
+        ack?.({ ok: true, ...response });
+      } catch (err) {
+        console.error('[replay] get-replay-logs failed:', err.message);
+        const failure = { workspaceId, count: 0, entries: [], error: 'Could not load the session history.' };
+        socket.emit('replay-logs', failure);
+        ack?.({ ok: false, message: failure.error });
+      }
     });
 
     // ---- administrator actions ----------------------------------------

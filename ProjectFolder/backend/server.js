@@ -6,6 +6,7 @@ import { Server } from "socket.io";
 import { connectDB } from "./config/db.js";
 import { setupSocket, setPersistence } from "./services/socketService.js";
 import { setPersistence as setStorePersistence } from "./services/workspaceStore.js";
+import { setPersistence as setLogPersistence } from "./services/updateLogService.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
 import executeRoutes from "./routes/executeRoutes.js";
 
@@ -44,6 +45,7 @@ const io = new Server(server, {
 const connected = await connectDB();
 setPersistence(connected);       // Yjs snapshots
 setStorePersistence(connected);  // workspaces / members / requests
+setLogPersistence(connected);     // updatelogs (replay history)
 setupSocket(io);
 
 server.listen(PORT, () => {

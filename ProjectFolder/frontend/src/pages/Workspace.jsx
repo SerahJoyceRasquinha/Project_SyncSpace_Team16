@@ -6,6 +6,7 @@ import { loadSession, clearSession } from '../utils/session';
 import Canvas from '../components/Canvas.jsx';
 import Editor from '../components/Editor.jsx';
 import AdminPanel from '../components/AdminPanel.jsx';
+import ReplaySlider from '../components/ReplaySlider.jsx';
 import { Toaster } from '../components/Toast.jsx';
 
 export default function Workspace() {
@@ -15,6 +16,7 @@ export default function Workspace() {
   const session = loadSession(workspaceId);
 
   const [panelOpen, setPanelOpen] = useState(false);
+  const [replayOpen, setReplayOpen] = useState(false);
   const { toasts, toast, dismiss } = useToasts();
 
   const {
@@ -25,7 +27,8 @@ export default function Workspace() {
     pendingRequests,
     workspace,
     fatal,
-    admin
+    admin,
+    replay
   } = useCollaboration(workspaceId, session);
 
   const isAdmin = session?.role === 'admin';
@@ -111,6 +114,15 @@ export default function Workspace() {
           ))}
         </div>
 
+        <button
+          className="admin-btn"
+          onClick={() => setReplayOpen(true)}
+          disabled={!connected}
+          title="Scrub backward through this session's history"
+        >
+          Replay
+        </button>
+
         {isAdmin && (
           <button className="admin-btn" onClick={() => setPanelOpen((o) => !o)}>
             Admin
@@ -147,6 +159,17 @@ export default function Workspace() {
           />
         )}
       </main>
+
+      {/* Replay is an overlay, not a pane: it must not reflow the live board
+          behind it, and it renders its OWN reconstructed document, so the
+          collaborative canvas keeps running untouched underneath. */}
+      {replayOpen && (
+        <ReplaySlider
+          workspaceId={workspaceId}
+          fetchLogs={replay.fetchLogs}
+          onClose={() => setReplayOpen(false)}
+        />
+      )}
 
       <Toaster toasts={toasts} dismiss={dismiss} />
     </div>
