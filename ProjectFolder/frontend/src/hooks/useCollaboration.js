@@ -142,6 +142,45 @@ export function useCollaboration(workspaceId, session) {
       );
     });
 
+  // ---- replay: Blueprint Part 13 ---------------------------------------
+  // Ask the server for this room's update log. We resolve on the 'replay-logs'
+  // EVENT rather than only an acknowledgement because that is the event pair
+  // the blueprint specifies, and the timeout means a server that never answers
+  // shows an honest error instead of an endless spinner.
+  const fetchReplayLogs = () =>
+    new Promise((resolve) => {
+      const socket = socketRef.current;
+      if (!socket || !socket.connected) {
+        return resolve({ ok: false, message: 'Not connected to this workspace.' });
+      }
+
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.off('replay-logs', onLogs);
+        resolve(value);
+      };
+
+      const onLogs = (res) =>
+        finish(
+          res?.error
+            ? { ok: false, message: res.error }
+            : { ok: true, ...(res || {}) }
+        );
+
+      const timer = setTimeout(
+        () => finish({ ok: false, message: 'The server did not answer in time.' }),
+        15000
+      );
+
+      socket.on('replay-logs', onLogs);
+      socket.emit('get-replay-logs', {});
+    });
+
+  const replay = { fetchLogs: fetchReplayLogs };
+
   const admin = {
     approve: (requestId) => emitAdmin('admin:approve', { requestId }),
     reject: (requestId, reason) => emitAdmin('admin:reject', { requestId, reason }),
@@ -154,5 +193,5 @@ export function useCollaboration(workspaceId, session) {
     }
   };
 
-  return { ...(ctx || {}), connected, peers, pendingRequests, workspace, fatal, admin };
+  return { ...(ctx || {}), connected, peers, pendingRequests, workspace, fatal, admin, replay };
 }
