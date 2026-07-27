@@ -50,19 +50,54 @@ function connect(token) {
   return { socket, ydoc };
 }
 
-/** Ask for the log via the blueprint EVENT and resolve when it lands. */
+/**
+ * Fetch the log over the STREAMED protocol (begin / chunk / end) and return
+ * the same shape the old single-message response had, so every assertion
+ * below keeps its meaning: { workspaceId, count, capped, entries }.
+ * Resolves null on timeout — which is also how the lobby-refusal test reads.
+ */
 function getLogsViaEvent(socket, timeout = 5000) {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      socket.off('replay-logs', onLogs);
-      resolve(null);
-    }, timeout);
-    const onLogs = (res) => {
+    let meta = null;
+    let entries = null;
+    let received = 0;
+
+    const cleanup = () => {
       clearTimeout(timer);
-      socket.off('replay-logs', onLogs);
-      resolve(res);
+      socket.off('replay-logs-begin', onBegin);
+      socket.off('replay-logs-chunk', onChunk);
+      socket.off('replay-logs-end', onEnd);
+      socket.off('replay-logs-error', onError);
     };
-    socket.on('replay-logs', onLogs);
+    const timer = setTimeout(() => { cleanup(); resolve(null); }, timeout);
+
+    const onBegin = (res) => {
+      meta = res;
+      entries = (res.meta || []).map((m) => ({ ...m, payload: null }));
+      if (!entries.length) { cleanup(); resolve({ ...res, entries: [] }); }
+    };
+    const onChunk = (chunk) => {
+      if (!entries) return;
+      const data = toBytes(chunk.data) || new Uint8Array(0);
+      let off = 0;
+      chunk.sizes.forEach((size, j) => {
+        entries[chunk.start + j].payload = data.subarray(off, off + size);
+        off += size;
+        received++;
+      });
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(meta && received >= entries.length
+        ? { workspaceId: meta.workspaceId, count: meta.count, capped: meta.capped, entries }
+        : null);
+    };
+    const onError = (res) => { cleanup(); resolve({ ...res, failed: true, entries: [] }); };
+
+    socket.on('replay-logs-begin', onBegin);
+    socket.on('replay-logs-chunk', onChunk);
+    socket.on('replay-logs-end', onEnd);
+    socket.on('replay-logs-error', onError);
     socket.emit('get-replay-logs', {});
   });
 }
@@ -133,18 +168,20 @@ await wait(600);
 
 // 1 / 2 -------------------------------------------------- fetch the log
 const viaEvent = await getLogsViaEvent(admin.socket);
-check('get-replay-logs answers on the replay-logs event', viaEvent !== null);
+check('get-replay-logs answers over the replay-logs stream', viaEvent !== null && !viaEvent.failed);
 check('every relayed update was logged',
   (viaEvent?.count || 0) >= 4, `got ${viaEvent?.count}`);
 
 const entries = viaEvent?.entries || [];
 
 // 3 ---------------------------------------------------- ack path as well
+// The ack is a SUMMARY on purpose: payloads in an ack would be one packet
+// with one attachment per entry, the exact shape the parser refuses.
 const viaAck = await new Promise((resolve) =>
   admin.socket.emit('get-replay-logs', {}, resolve)
 );
-check('the acknowledgement callback answers too',
-  viaAck?.ok === true && viaAck.count === viaEvent.count);
+check('the acknowledgement callback answers a summary too',
+  viaAck?.ok === true && viaAck.streamed === true && viaAck.count === viaEvent.count);
 
 // 4 ------------------------------------------------------------ metadata
 const ordered = entries.every((e, i) => i === 0 || e.seq > entries[i - 1].seq);
@@ -258,6 +295,80 @@ await wait(700);
 check("a late joiner's edits are logged too",
   (await getLogsViaEvent(admin.socket)).count > refetchA.count);
 
+// 12 --------------------- LONG SESSIONS: the regression this fix exists for
+// The old transport put one binary attachment per entry into a single packet;
+// the parser refuses more than 10 attachments, so any session past ~10
+// updates died with a "parse error" disconnect and the UI blamed a timeout.
+// Prove a genuinely long, mixed-size history now round-trips completely,
+// in order, and reconstructs the exact live document — fast.
+const big = await post('/workspaces', {
+  name: 'Marathon Room',
+  password: 'secret123',
+  username: 'Serah',
+  permissionMode: 'password'
+});
+const bigConn = connect(big.data.token);
+await wait(400);
+
+const bigShapes = bigConn.ydoc.getArray('shapes');
+const mainMap = new Y.Map();
+mainMap.set('id', 'drag-target'); mainMap.set('type', 'rect');
+mainMap.set('x', 0); mainMap.set('y', 0);
+mainMap.set('width', 120); mainMap.set('height', 80);
+bigConn.ydoc.transact(() => bigShapes.push([mainMap]));
+
+// ~60 freehand strokes with real point arrays (mixed tools / rapid drawing)…
+for (let s = 0; s < 60; s++) {
+  const m = new Y.Map();
+  m.set('id', `stroke-${s}`); m.set('type', 'path'); m.set('x', 0); m.set('y', 0);
+  const pts = new Y.Array();
+  const flat = [];
+  for (let p = 0; p < 120; p++) flat.push(s * 3 + p, s * 2 + p);
+  pts.push(flat);
+  m.set('points', pts);
+  bigConn.ydoc.transact(() => bigShapes.push([m]));
+}
+// …plus ~350 tiny live-drag patches, the way a real pointer emits them
+for (let i = 0; i < 350; i++) {
+  bigConn.ydoc.transact(() => { mainMap.set('x', i); mainMap.set('y', i % 97); }, 'live');
+}
+bigConn.ydoc.getText('monaco').insert(0, '# a long session\n');
+await wait(1500); // let the relay drain and every update get logged
+
+const t0 = Date.now();
+const bigLogs = await getLogsViaEvent(bigConn.socket, 10000);
+const fetchMs = Date.now() - t0;
+
+check('a long session (400+ updates) streams back without a parse error',
+  bigLogs !== null && !bigLogs.failed, `fetch=${fetchMs}ms`);
+check('the long history arrives COMPLETE (no dropped entries)',
+  (bigLogs?.entries || []).length === bigLogs?.count &&
+  (bigLogs?.count || 0) >= 400 &&
+  bigLogs.entries.every((e) => toBytes(e.payload)?.length === e.size),
+  `count=${bigLogs?.count} entries=${bigLogs?.entries?.length}`);
+check('long-session entries stay ordered by seq',
+  (bigLogs?.entries || []).every((e, i) => i === 0 || e.seq > bigLogs.entries[i - 1].seq));
+check('the long history fetch completes promptly (well under any timeout)',
+  fetchMs < 5000, `took ${fetchMs}ms`);
+
+const bigReplay = rebuild(bigLogs.entries, bigLogs.entries.length);
+check('replaying the long log reproduces the live document exactly',
+  shapeCount(bigReplay) === shapeCount(bigConn.ydoc) &&
+  bigReplay.getText('monaco').toString() === bigConn.ydoc.getText('monaco').toString() &&
+  bigReplay.getArray('shapes').toArray().find((m) => m.get('id') === 'drag-target')?.get('x') === 349,
+  `replay=${shapeCount(bigReplay)} live=${shapeCount(bigConn.ydoc)}`);
+
+// live sync must have survived serving that history
+const bigPeer = await post(`/workspaces/${big.data.workspace.workspaceId}/join`, {
+  username: 'Devika',
+  password: 'secret123'
+});
+const bigPeerConn = connect(bigPeer.data.token);
+await wait(1200);
+check('live collaboration is unaffected by streaming a long history',
+  shapeCount(bigPeerConn.ydoc) === shapeCount(bigConn.ydoc),
+  `peer=${shapeCount(bigPeerConn.ydoc)} live=${shapeCount(bigConn.ydoc)}`);
+
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 
 admin.socket.disconnect();
@@ -265,4 +376,6 @@ otherConn.socket.disconnect();
 ownerConn.socket.disconnect();
 lobby.socket.disconnect();
 memberConn.socket.disconnect();
+bigConn.socket.disconnect();
+bigPeerConn.socket.disconnect();
 process.exit(failed ? 1 : 0);

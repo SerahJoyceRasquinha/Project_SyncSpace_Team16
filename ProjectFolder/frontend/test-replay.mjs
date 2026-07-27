@@ -11,7 +11,7 @@
  * directly with no bundler.
  */
 import * as Y from 'yjs';
-import { toBytes, rebuildTo, ReplayCache, frameBounds } from './src/canvas/replay.js';
+import { toBytes, unpackChunk, rebuildTo, ReplayCache, frameBounds } from './src/canvas/replay.js';
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
@@ -207,6 +207,86 @@ check('frameBounds ignores non-finite geometry without producing NaN', (() => {
                          { x: 4, y: 4, width: 6, height: 6 }]);
   return r && Number.isFinite(r.minX) && Number.isFinite(r.width);
 })());
+
+// ---- 9. unpackChunk: the streamed wire format -------------------------
+// A strict full-document fingerprint: every shape field plus the editor text,
+// used by the checkpoint checks below to demand exact equality.
+const snap = (doc) => JSON.stringify({
+  shapes: doc.getArray('shapes').toArray().map((m) => {
+    const o = {};
+    m.forEach((v, k) => { o[k] = v && v.toArray ? v.toArray() : v; });
+    return o;
+  }),
+  code: doc.getText('monaco').toString()
+});
+
+// The server ships history as chunks carrying ONE packed buffer + sizes,
+// never one buffer per entry (the parser refuses >10 binary attachments in
+// a packet — the root cause of the old "replay times out" failure).
+{
+  const a = Uint8Array.from([1, 2, 3]);
+  const b = Uint8Array.from([9, 8, 7, 6]);
+  const c = Uint8Array.from([5]);
+  const packed = new Uint8Array(a.length + b.length + c.length);
+  packed.set(a, 0); packed.set(b, 3); packed.set(c, 7);
+
+  const out = unpackChunk({ start: 0, sizes: [3, 4, 1], data: packed });
+  check('unpackChunk splits a packed chunk back into per-entry bytes',
+    out?.length === 3 &&
+    JSON.stringify([...out[0]]) === JSON.stringify([...a]) &&
+    JSON.stringify([...out[1]]) === JSON.stringify([...b]) &&
+    JSON.stringify([...out[2]]) === JSON.stringify([...c]));
+
+  check('unpackChunk accepts the serialised-Buffer shape socket.io can deliver',
+    unpackChunk({ sizes: [2, 2], data: { type: 'Buffer', data: [1, 2, 3, 4] } })?.[1]?.[0] === 3);
+
+  check('unpackChunk handles a chunk of empty payloads',
+    unpackChunk({ sizes: [0, 0], data: new Uint8Array(0) })?.length === 2);
+
+  check('unpackChunk rejects a chunk whose sizes disagree with its data',
+    unpackChunk({ sizes: [3, 4], data: packed }) === null &&      // 7 != 8
+    unpackChunk({ sizes: [10], data: packed.subarray(0, 4) }) === null &&
+    unpackChunk({ sizes: [-1], data: packed }) === null);
+
+  check('unpackChunk rejects junk without throwing',
+    unpackChunk(null) === null && unpackChunk({}) === null && unpackChunk({ sizes: 'x' }) === null);
+}
+
+// ---- 10. checkpoints engage on LONG sessions and stay exact -----------
+// Build a log big enough (> checkpointEvery) that backward jumps restore
+// from a snapshot instead of update 0, then hold the cache to the same
+// standard as before: byte-identical to a from-scratch rebuild everywhere.
+{
+  const longSrc = new Y.Doc();
+  const longLog = [];
+  longSrc.on('update', (u) => longLog.push({ payload: new Uint8Array(u) }));
+  const arr = longSrc.getArray('shapes');
+  const mover = new Y.Map();
+  mover.set('id', 'mover'); mover.set('type', 'rect'); mover.set('x', 0); mover.set('y', 0);
+  longSrc.transact(() => arr.push([mover]));
+  for (let i = 0; i < 700; i++) {
+    longSrc.transact(() => { mover.set('x', i); if (i % 50 === 0) mover.set('note', `at-${i}`); });
+  }
+
+  const longCache = new ReplayCache(longLog);
+  longCache.at(longLog.length); // build forward once: lays down checkpoints
+  check('checkpoints are recorded while building a long session forward',
+    longCache.checkpoints.size >= 2, `got ${longCache.checkpoints.size}`);
+
+  const probes = [650, 501, 500, 499, 260, 251, 250, 249, 1, 0, 700];
+  const checkpointOk = probes.every((n) => {
+    const cached = snap(longCache.at(n));
+    return cached === snap(rebuildTo(longLog, n));
+  });
+  check('backward jumps via checkpoints are byte-identical to from-scratch rebuilds',
+    checkpointOk);
+
+  const before = longCache.checkpoints.size;
+  longCache.at(120); // below the first checkpoint: must fall back to zero cleanly
+  check('a jump below the first checkpoint still reconstructs correctly',
+    snap(longCache.at(120)) === snap(rebuildTo(longLog, 120)) &&
+    longCache.checkpoints.size >= before);
+}
 
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

@@ -8,7 +8,7 @@ one feature in dependency order:
 |---|---|---|
 | 3 | `updatelogs` collection (Blueprint 8.4) | `backend/models/UpdateLog.js` |
 | 4 | Log every update to `updatelogs` | `backend/services/socketService.js` |
-| 4 | Socket events `get-replay-logs` / `replay-logs` | `backend/services/socketService.js` |
+| 4 | Socket events `get-replay-logs` / `replay-logs-*` stream | `backend/services/socketService.js` |
 | 4 | REPLAY: scrub backward through history | `frontend/src/components/ReplaySlider.jsx` |
 
 Like every milestone before it, this is **additive**: no change to the sync
@@ -152,6 +152,100 @@ Both are tested: *"a waiting user CANNOT read the session history"* and
 
 ---
 
+## 5½ · The transfer is a stream — and why that is load-bearing, not taste
+
+The feature originally shipped the whole history in one `replay-logs` emit,
+with every entry carrying its own `Buffer`. That version **worked only for
+sessions of about ten updates and silently died for everything real**: replay
+of any drawing past ~15 seconds hung on *"Loading session history…"* and then
+showed a false *"The server did not answer in time."*
+
+### The root cause, precisely
+
+socket.io encodes **every Buffer nested anywhere in an emitted value as a
+separate binary attachment**, and `socket.io-parser` ≥ 4.2.5 — pulled in by
+the `~4.2.4` range on **both** the server and the client — added a DoS
+defence that refuses any packet carrying **more than 10 attachments**
+(`maxAttachments: 10`). So:
+
+- 3–4 quick strokes → ≤ 10 entries → ≤ 10 attachments → decodes → replay works.
+- Anything longer (a drag alone emits ~60 live updates a second) → 11+
+  attachments → the **client's** parser throws `too many attachments` → the
+  engine tears the connection down with a `parse error` → the response never
+  arrives → the client's fixed 15-second timer blames the server.
+
+The server had answered every time. It answered unreadably. Nothing about the
+recording, storage, ordering or reconstruction stages was wrong — the bug
+lived entirely in the wire encoding, which is why "increase the timeout"
+could never have fixed it.
+
+### The protocol now
+
+`get-replay-logs` is answered by a stream in which **no message ever carries
+more than one binary attachment**, regardless of session length:
+
+```
+replay-logs-begin  { workspaceId, count, capped, skipped,
+                     meta: [{ seq, timestamp, username, size }, …] }
+replay-logs-chunk  { workspaceId, start, count, sizes: […],
+                     data: <ONE packed Buffer> }        · repeated
+replay-logs-end    { workspaceId, count }
+replay-logs-error  { workspaceId, code, message }       · instead of the above
+```
+
+Each chunk concatenates its payloads into a single buffer and closes at 400
+entries **or** 512 KB, whichever comes first, so one message can never
+balloon; the client splits it back apart with `unpackChunk()` (zero-copy
+slices, provable headlessly in `canvas/replay.js`). The server yields the
+event loop (`setImmediate`) between chunks, so serving a five-thousand-update
+history cannot starve live collaboration — proven by a dedicated check. The
+acknowledgement now answers a **summary** (`{ ok, streamed, count, capped }`),
+never the payloads, because an ack is a single packet and would hit the exact
+same ceiling.
+
+Downstream of the transport, three more things hardened alongside it:
+
+- **The client's watchdog is an inactivity timer**, re-armed on every message
+  — a long transfer that is making progress can never falsely time out, and
+  a genuinely stalled one fails saying exactly how much arrived
+  (*"…stalled (312 of 4 980 updates received)"*). Distinct messages now cover
+  the real failure modes: storage read failure (from the server, with a
+  code), corrupted chunk, incomplete history, interrupted connection, and
+  not-connected — the generic *"server did not answer"* text is gone.
+- **`appendUpdate()` allocates `seq` atomically.** The old code awaited the
+  lazy seed *between* reading and advancing the counter, so two rapid-fire
+  updates could resume from that `await` with the same value and be logged
+  under duplicate seqs — corrupting the slider's x-axis on precisely the
+  long sessions replay exists for. Seeding now runs once behind a shared
+  promise and allocation is a synchronous read-and-increment; the long-
+  session ordering check in `backend/test-replay.mjs` pins it.
+- **Stored payloads are normalised on the way out** (`toStoredBytes`):
+  memory-mode Buffers and Mongo-mode BSON `Binary` rows both ship correctly,
+  and a single corrupt row is skipped and counted (`skipped`) instead of
+  aborting the whole fetch.
+
+### The dialog loads in two visible phases
+
+The slider shows a real progress bar through both halves of opening a long
+session — *downloading* (chunks arriving) and *preparing* (warming the
+reconstruction cache in 200-update batches through `setTimeout(0)`, so the
+first frame — "now", which needs the whole log applied once — can never lock
+the UI thread). Warming also lays down the cache's **checkpoints**: encoded
+snapshots every ~`N/20` updates (never more often than every 250), so a
+backward jump restores from the nearest checkpoint instead of replaying from
+zero. The checkpoint path is held to the same standard as the original
+cache — byte-identical to a from-scratch rebuild at every probed index — in
+`frontend/test-replay.mjs`.
+
+One neighbouring limit was raised for the same class of reason:
+`maxHttpBufferSize` (engine.io's *receive* ceiling, default 1 MB) is now 8 MB
+in `server.js`, because a single sync-update carrying an uploaded image's
+base64 `src` can legitimately exceed 1 MB — and an over-limit message does
+not error politely, it severs the socket, which would have been this same
+silent-transport-kill bug wearing live collaboration's clothes.
+
+---
+
 ## 6 · Seeding from a snapshot, so history never lies
 
 A room can legitimately have a `docstates` snapshot but an empty log — the board
@@ -222,19 +316,25 @@ component only decides which frame to show and draws it.
 
 ## 8 · Tests
 
-**`backend/test-replay.mjs` — 20 checks, the wire.** Run with the server up:
+**`backend/test-replay.mjs` — 26 checks, the wire.** Run with the server up:
 
 ```bash
 cd backend && npm run test:replay
 ```
 
-Every update logged · both the `replay-logs` event *and* the ack callback answer ·
-ordering, timestamps and attribution · full replay reproduces the live document
-exactly · a prefix is a true intermediate state · the editor replays too ·
-workspace isolation both ways · a lobby socket is refused · live sync unaffected ·
-a late joiner's edits are logged.
+Every update logged · the `replay-logs-*` stream answers *and* the ack answers
+a summary · ordering, timestamps and attribution · full replay reproduces the
+live document exactly · a prefix is a true intermediate state · the editor
+replays too · workspace isolation both ways · a lobby socket is refused · live
+sync unaffected · a late joiner's edits are logged · **and the long-session
+regression block**: 400+ mixed updates stream back with no parse error,
+complete, seq-ordered, in well under any timeout, reconstruct the live
+document exactly, and live sync survives serving them. There is also
+`stress-replay.mjs` (`npm run test:replay-stress`), which drives a room past
+the 5 000-entry cap with 300 KB image updates mixed in and verifies the
+transfer stays chunk-bounded, complete, ordered and fast.
 
-**`frontend/test-replay.mjs` — 30 checks, the maths.** No server needed:
+**`frontend/test-replay.mjs` — 38 checks, the maths.** No server needed:
 
 ```bash
 cd frontend && npm run test:replay
@@ -245,7 +345,10 @@ a later move, and an object that was *later deleted* · the cache invariant
 forward, backward and random · index clamping · `toBytes` across all four wire
 formats socket.io delivers · a malformed entry is skipped instead of killing the
 replay · a corrupt payload never throws · empty logs · `frameBounds` ·
-**stickers and uploaded images replay with their `src` intact.**
+**stickers and uploaded images replay with their `src` intact** ·
+`unpackChunk` splits, validates and rejects the streamed wire format ·
+checkpoints engage on a 700-update log and every backward jump through them
+is **byte-identical** to a from-scratch rebuild.
 
 ### Suite totals
 
@@ -253,13 +356,13 @@ replay · a corrupt payload never throws · empty logs · `frameBounds` ·
 |---|---|
 | `backend/test-workspace.mjs` | 15 |
 | `backend/test-execute.mjs` | 16 |
-| `backend/test-replay.mjs` | **20 (new)** |
+| `backend/test-replay.mjs` | **26** (6 new: long-session regression) |
 | `frontend/test-shapes.mjs` | 11 |
 | `frontend/test-connectors.mjs` | 28 |
 | `frontend/test-brushes.mjs` | 29 |
-| `frontend/test-replay.mjs` | **30 (new)** |
+| `frontend/test-replay.mjs` | **38** (8 new: unpackChunk + checkpoints) |
 | `frontend/test-rendering.mjs` | 124 |
-| **Total** | **273** |
+| **Total** | **287** |
 
 All green, plus a clean Vite production build.
 

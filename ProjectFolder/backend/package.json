@@ -9,7 +9,8 @@
     "start": "node server.js",
     "test:workspace": "node test-workspace.mjs",
     "test:execute": "node test-execute.mjs",
-    "test:replay": "node test-replay.mjs"
+    "test:replay": "node test-replay.mjs",
+    "test:replay-stress": "node stress-replay.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

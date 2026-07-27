@@ -39,7 +39,14 @@ app.use((err, req, res, next) => {
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: CLIENT_ORIGIN, methods: ["GET", "POST", "PATCH", "DELETE"] }
+  cors: { origin: CLIENT_ORIGIN, methods: ["GET", "POST", "PATCH", "DELETE"] },
+  // engine.io's default receive ceiling is 1 MB, and a message over it does
+  // not error politely — it severs the socket at the transport layer. A
+  // single sync-update carrying an uploaded image (base64 src inside the
+  // shape) can legitimately exceed 1 MB, which would silently kill live
+  // collaboration for that user. 8 MB keeps the DoS guard while making
+  // room for real content.
+  maxHttpBufferSize: 8e6
 });
 
 const connected = await connectDB();

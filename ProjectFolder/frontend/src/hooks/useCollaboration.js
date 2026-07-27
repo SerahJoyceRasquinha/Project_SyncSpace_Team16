@@ -7,6 +7,7 @@ import {
   removeAwarenessStates
 } from 'y-protocols/awareness';
 import { createSocket, colorFor } from '../utils/socket';
+import { unpackChunk } from '../canvas/replay.js';
 
 /**
  * Our Yjs "provider" over Socket.io. The sync core is UNCHANGED from Milestone 0:
@@ -143,39 +144,127 @@ export function useCollaboration(workspaceId, session) {
     });
 
   // ---- replay: Blueprint Part 13 ---------------------------------------
-  // Ask the server for this room's update log. We resolve on the 'replay-logs'
-  // EVENT rather than only an acknowledgement because that is the event pair
-  // the blueprint specifies, and the timeout means a server that never answers
-  // shows an honest error instead of an endless spinner.
-  const fetchReplayLogs = () =>
+  // Ask the server for this room's update log.
+  //
+  // The history arrives as a STREAM (replay-logs-begin / -chunk / -end), with
+  // every chunk's payloads packed into a single buffer. That wire shape is
+  // load-bearing: socket.io encodes each nested Buffer as its own binary
+  // attachment and the parser refuses packets with more than 10 of them, so
+  // the old single-message response (one Buffer per entry) was rejected by
+  // the client for any session past ~10 updates — the connection died with a
+  // "parse error" and the fixed 15 s timer then blamed the server for not
+  // answering, which was false: it had answered, unreadably.
+  //
+  // The watchdog is now an INACTIVITY timer, re-armed on every message, so a
+  // long transfer that is making progress can never falsely time out, while
+  // a genuinely stalled one still fails with a message that says what was
+  // actually received. `onProgress` (optional) receives { received, total }
+  // as chunks land, so the dialog can show real progress.
+  const fetchReplayLogs = (onProgress) =>
     new Promise((resolve) => {
       const socket = socketRef.current;
       if (!socket || !socket.connected) {
         return resolve({ ok: false, message: 'Not connected to this workspace.' });
       }
 
+      const STALL_MS = 12000;
+      let meta = null;      // { count, capped } from replay-logs-begin
+      let entries = null;   // filled in as chunks arrive
+      let received = 0;
       let settled = false;
+      let stallTimer = null;
+
+      const cleanup = () => {
+        clearTimeout(stallTimer);
+        socket.off('replay-logs-begin', onBegin);
+        socket.off('replay-logs-chunk', onChunk);
+        socket.off('replay-logs-end', onEnd);
+        socket.off('replay-logs-error', onError);
+        socket.off('disconnect', onDrop);
+      };
       const finish = (value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
-        socket.off('replay-logs', onLogs);
+        cleanup();
         resolve(value);
       };
+      const armStall = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => finish({
+          ok: false,
+          message: meta
+            ? `The history transfer stalled (${received} of ${meta.count} updates received). Please try again.`
+            : 'The server did not start sending the session history. Please try again.'
+        }), STALL_MS);
+      };
 
-      const onLogs = (res) =>
-        finish(
-          res?.error
-            ? { ok: false, message: res.error }
-            : { ok: true, ...(res || {}) }
-        );
+      const onBegin = (res) => {
+        meta = { count: Math.max(0, res?.count | 0), capped: Boolean(res?.capped) };
+        const list = Array.isArray(res?.meta) ? res.meta : [];
+        entries = list.map((m) => ({
+          seq: m?.seq,
+          timestamp: m?.timestamp,
+          username: m?.username ?? null,
+          size: m?.size | 0,
+          payload: null
+        }));
+        armStall();
+        onProgress?.({ received: 0, total: meta.count });
+        if (meta.count === 0 || entries.length === 0) {
+          finish({ ok: true, count: 0, capped: meta.capped, entries: [] });
+        }
+      };
 
-      const timer = setTimeout(
-        () => finish({ ok: false, message: 'The server did not answer in time.' }),
-        15000
-      );
+      const onChunk = (chunk) => {
+        if (!meta || !entries) return; // a chunk before begin: ignore
+        const slices = unpackChunk(chunk);
+        if (!slices) {
+          return finish({
+            ok: false,
+            message: 'The session history arrived corrupted and could not be parsed.'
+          });
+        }
+        const start = Math.max(0, chunk.start | 0);
+        for (let j = 0; j < slices.length; j++) {
+          const idx = start + j;
+          if (idx < entries.length && !entries[idx].payload) {
+            entries[idx].payload = slices[j];
+            received++;
+          }
+        }
+        armStall();
+        onProgress?.({ received, total: meta.count });
+        // Completeness, not the end marker, is what resolves — so a lost
+        // final packet degrades to the stall message instead of a hang.
+        if (received >= entries.length) {
+          finish({ ok: true, count: entries.length, capped: meta.capped, entries });
+        }
+      };
 
-      socket.on('replay-logs', onLogs);
+      const onEnd = () => {
+        if (!meta || !entries) return;
+        if (received >= entries.length) {
+          finish({ ok: true, count: entries.length, capped: meta.capped, entries });
+        } else {
+          finish({
+            ok: false,
+            message: `The session history arrived incomplete (${received} of ${entries.length} updates). Please try again.`
+          });
+        }
+      };
+
+      const onError = (res) =>
+        finish({ ok: false, message: res?.message || 'The server could not read the session history.' });
+
+      const onDrop = () =>
+        finish({ ok: false, message: 'The connection was interrupted while loading the session history.' });
+
+      socket.on('replay-logs-begin', onBegin);
+      socket.on('replay-logs-chunk', onChunk);
+      socket.on('replay-logs-end', onEnd);
+      socket.on('replay-logs-error', onError);
+      socket.on('disconnect', onDrop);
+      armStall();
       socket.emit('get-replay-logs', {});
     });
 

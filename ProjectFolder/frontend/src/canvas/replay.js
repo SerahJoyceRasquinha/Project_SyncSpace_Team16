@@ -30,6 +30,36 @@ export function toBytes(payload) {
 }
 
 /**
+ * Split one streamed history chunk back into per-entry byte arrays.
+ *
+ * The server ships the log as replay-logs-chunk messages, each carrying ONE
+ * packed buffer plus the per-entry sizes — never one buffer per entry. That
+ * shape is not an optimisation, it is the fix for a hard failure: socket.io
+ * turns every nested Buffer into a separate binary attachment, and the
+ * parser on both ends refuses packets with more than 10 attachments, so the
+ * old one-buffer-per-entry response was rejected outright (a "parse error"
+ * disconnect) for any session past ~10 updates.
+ *
+ * Slices are zero-copy subarray views into the chunk buffer. Returns null if
+ * the chunk is internally inconsistent (sizes disagree with the data length),
+ * so the caller can report "corrupted replay data" rather than render a lie.
+ */
+export function unpackChunk(chunk) {
+  if (!chunk || !Array.isArray(chunk.sizes)) return null;
+  const data = toBytes(chunk.data) || new Uint8Array(0);
+  const out = [];
+  let off = 0;
+  for (const s of chunk.sizes) {
+    const size = Number(s);
+    if (!Number.isInteger(size) || size < 0 || off + size > data.length) return null;
+    out.push(data.subarray(off, off + size));
+    off += size;
+  }
+  if (off !== data.length) return null;
+  return out;
+}
+
+/**
  * Build a fresh document from the first `n` entries of a log.
  *
  * This is the whole idea of replay in four lines: a Yjs update is a
@@ -70,27 +100,56 @@ export function rebuildTo(entries, n) {
  */
 export class ReplayCache {
   constructor(entries = []) {
-    this.entries = entries;
-    this.doc = new Y.Doc();
-    this.builtTo = 0;
+    this.reset(entries);
   }
 
-  /** The document as it stood after `n` updates. n = 0 is the empty board. */
+  /**
+   * The document as it stood after `n` updates. n = 0 is the empty board.
+   *
+   * Backward moves no longer always restart from zero: while building
+   * forward the cache snapshots the encoded document every `checkpointEvery`
+   * updates (at most ~20 snapshots per session, so memory stays bounded),
+   * and a backward jump restores from the nearest checkpoint at or below the
+   * target. On a session thousands of updates long that turns "drag the
+   * slider left" from a full O(N) rebuild into a short delta.
+   */
   at(n) {
     const target = Math.max(0, Math.min(n, this.entries.length));
 
     if (target < this.builtTo) {
+      let base = 0;
+      let snap = null;
+      for (const [k, v] of this.checkpoints) {
+        if (k <= target && k > base) { base = k; snap = v; }
+      }
       this.doc = new Y.Doc();
       this.builtTo = 0;
+      if (snap) {
+        try {
+          Y.applyUpdate(this.doc, snap, 'replay');
+          this.builtTo = base;
+        } catch (err) {
+          console.warn('[SyncSpace] replay: checkpoint restore failed, rebuilding from 0', err);
+          this.doc = new Y.Doc();
+          this.builtTo = 0;
+        }
+      }
     }
 
     for (let i = this.builtTo; i < target; i++) {
       const bytes = toBytes(this.entries[i]?.payload);
-      if (!bytes) continue;
-      try {
-        Y.applyUpdate(this.doc, bytes, 'replay');
-      } catch (err) {
-        console.warn('[SyncSpace] replay: skipped a malformed update at', i, err);
+      if (bytes) {
+        try {
+          Y.applyUpdate(this.doc, bytes, 'replay');
+        } catch (err) {
+          console.warn('[SyncSpace] replay: skipped a malformed update at', i, err);
+        }
+      }
+      const applied = i + 1;
+      if (applied % this.checkpointEvery === 0 && !this.checkpoints.has(applied)) {
+        try {
+          this.checkpoints.set(applied, Y.encodeStateAsUpdate(this.doc));
+        } catch { /* a missing checkpoint only costs speed, never correctness */ }
       }
     }
 
@@ -103,6 +162,10 @@ export class ReplayCache {
     if (entries) this.entries = entries;
     this.doc = new Y.Doc();
     this.builtTo = 0;
+    this.checkpoints = new Map(); // appliedCount -> encoded state
+    // ~20 checkpoints max regardless of session length, floor of 250 so tiny
+    // sessions (which rebuild instantly anyway) carry none of the overhead.
+    this.checkpointEvery = Math.max(250, Math.ceil((this.entries?.length || 0) / 20));
   }
 }
 

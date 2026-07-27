@@ -30,6 +30,38 @@ import * as logs from './updateLogService.js';
 // workspaceId -> { doc, dirty, timer }
 const rooms = new Map();
 
+// ---- replay transfer tuning ---------------------------------------------
+// A chunk closes when EITHER limit is reached. 400 entries keeps the JSON
+// side (sizes + framing) small; 512 KB bounds the binary side so one chunk
+// with a few large stroke/image updates cannot balloon a single ws frame.
+const REPLAY_CHUNK_ENTRIES = 400;
+const REPLAY_CHUNK_BYTES = 512 * 1024;
+
+/**
+ * A stored payload arrives in different shapes depending on the store:
+ * a Node Buffer (memory mode), a BSON Binary via Mongoose .lean() (Mongo
+ * mode, exposes .buffer), or - defensively - a plain Uint8Array or a
+ * serialised { type:'Buffer', data:[...] }. Normalise all of them to a
+ * Buffer, or null if the row is unreadable.
+ */
+function toStoredBytes(payload) {
+  if (!payload) return null;
+  if (Buffer.isBuffer(payload)) return payload;
+  if (payload instanceof Uint8Array) {
+    return Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
+  }
+  const inner = payload.buffer; // BSON Binary
+  if (inner) {
+    if (Buffer.isBuffer(inner)) return inner;
+    if (inner instanceof Uint8Array) {
+      return Buffer.from(inner.buffer, inner.byteOffset, inner.byteLength);
+    }
+  }
+  if (Array.isArray(payload)) return Buffer.from(payload);
+  if (Array.isArray(payload.data)) return Buffer.from(payload.data);
+  return null;
+}
+
 let persistenceEnabled = false;
 export function setPersistence(flag) {
   persistenceEnabled = flag;
@@ -248,31 +280,111 @@ export function setupSocket(io) {
     // the document. The room is read from socket.data (set from the signed
     // token at handshake), never from the request, so this cannot be used to
     // read another workspace's history either.
+    //
+    // WHY THE HISTORY IS STREAMED, AND WHY EACH CHUNK PACKS ITS PAYLOADS
+    // INTO ONE BUFFER — this is the fix for the "replay works for tiny
+    // drawings, times out for real ones" bug:
+    //
+    // socket.io encodes every Buffer nested anywhere inside an emitted value
+    // as a SEPARATE binary attachment, and socket.io-parser >= 4.2.5 (pulled
+    // in by both our server and client) hard-refuses any packet carrying more
+    // than 10 attachments as a DoS defence. The old handler shipped the whole
+    // log in one emit with one Buffer PER ENTRY, so any session past ~10
+    // updates produced a packet the client's parser rejected — the client
+    // tore the connection down with "parse error", the response never
+    // arrived, and the UI's timer showed a false "server did not answer".
+    //
+    // The protocol below never puts more than ONE attachment in a message,
+    // no matter how long the session is:
+    //
+    //   replay-logs-begin  { count, capped, meta:[{seq,timestamp,username,size}] }
+    //   replay-logs-chunk  { start, count, sizes:[...], data: <one packed Buffer> }  (repeated)
+    //   replay-logs-end    { count }
+    //   replay-logs-error  { code, message }          (instead of any of the above)
+    //
+    // Chunking also bounds per-message size, lets the client show real
+    // progress, and the setImmediate() between chunks yields the event loop
+    // so serving a long history can never starve live collaboration.
     socket.on('get-replay-logs', async (_payload, ack) => {
+      const fail = (code, message) => {
+        socket.emit('replay-logs-error', { workspaceId, code, message });
+        ack?.({ ok: false, code, message });
+      };
+
+      let raw;
       try {
-        const entries = await logs.getLogs(workspaceId);
-        const response = {
-          workspaceId,
-          count: entries.length,
-          capped: entries.length >= logs.MAX_LOGS_PER_ROOM,
-          entries: entries.map((e) => ({
+        raw = await logs.getLogs(workspaceId);
+      } catch (err) {
+        console.error('[replay] history read failed:', err.message);
+        return fail('DB_READ_FAILED', 'The session history could not be read from storage.');
+      }
+
+      try {
+        // Normalise every stored payload up front. In memory mode these are
+        // Buffers; in Mongo mode .lean() can hand back BSON Binary objects.
+        // A single corrupt row is skipped (and reported) rather than allowed
+        // to abort the entire fetch.
+        const rows = [];
+        for (const e of raw) {
+          const bytes = toStoredBytes(e.payload);
+          if (!bytes || !bytes.length) continue;
+          rows.push({
             seq: e.seq,
             // ms since epoch: survives JSON, and the client only ever formats it
             timestamp: new Date(e.timestamp).getTime(),
             username: e.username || null,
-            size: e.payload.length,
-            payload: Buffer.from(e.payload)
+            bytes
+          });
+        }
+
+        const count = rows.length;
+        const capped = raw.length >= logs.MAX_LOGS_PER_ROOM;
+
+        socket.emit('replay-logs-begin', {
+          workspaceId,
+          count,
+          capped,
+          skipped: raw.length - count, // corrupt/empty rows we could not ship
+          meta: rows.map((r) => ({
+            seq: r.seq, timestamp: r.timestamp, username: r.username, size: r.bytes.length
           }))
-        };
-        // Emit the Blueprint event AND answer the acknowledgement, so either
-        // calling convention works for whoever consumes this next.
-        socket.emit('replay-logs', response);
-        ack?.({ ok: true, ...response });
+        });
+        // The ack answers a SUMMARY, never the payloads — an ack is a single
+        // packet and would hit the exact same attachment ceiling.
+        ack?.({ ok: true, streamed: true, count, capped });
+
+        let i = 0;
+        while (i < count) {
+          const start = i;
+          const sizes = [];
+          const parts = [];
+          let chunkBytes = 0;
+          while (
+            i < count &&
+            sizes.length < REPLAY_CHUNK_ENTRIES &&
+            (chunkBytes === 0 || chunkBytes + rows[i].bytes.length <= REPLAY_CHUNK_BYTES)
+          ) {
+            sizes.push(rows[i].bytes.length);
+            parts.push(rows[i].bytes);
+            chunkBytes += rows[i].bytes.length;
+            i++;
+          }
+          if (!socket.connected) return; // the viewer left mid-transfer: stop quietly
+          socket.emit('replay-logs-chunk', {
+            workspaceId,
+            start,
+            count: sizes.length,
+            sizes,
+            data: Buffer.concat(parts) // exactly ONE binary attachment per chunk
+          });
+          // Yield between chunks so a huge history can never block the relay.
+          await new Promise((r) => setImmediate(r));
+        }
+
+        socket.emit('replay-logs-end', { workspaceId, count });
       } catch (err) {
         console.error('[replay] get-replay-logs failed:', err.message);
-        const failure = { workspaceId, count: 0, entries: [], error: 'Could not load the session history.' };
-        socket.emit('replay-logs', failure);
-        ack?.({ ok: false, message: failure.error });
+        fail('REPLAY_INTERNAL', 'Internal replay processing error.');
       }
     });
 

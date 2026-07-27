@@ -46,19 +46,40 @@ const memory = new Map();
 // design — the same assumption the authoritative doc already makes.
 const nextSeq = new Map();
 
-async function seedSeq(roomId) {
-  if (nextSeq.has(roomId)) return nextSeq.get(roomId);
-  let start = 0;
-  if (persistent) {
-    try {
-      const last = await UpdateLog.findOne({ roomId }).sort({ seq: -1 }).lean();
-      if (last) start = last.seq + 1;
-    } catch (err) {
-      console.warn('[replay] could not read last seq:', err.message);
-    }
+// roomId -> in-flight seeding promise, so concurrent first appends share ONE
+// seed instead of racing each other.
+const seeding = new Map();
+
+/**
+ * Make sure nextSeq has an entry for the room. Runs the (possibly async) seed
+ * at most once per room; every concurrent caller awaits the same promise.
+ *
+ * Seeding and ALLOCATION are deliberately separated: the old code awaited the
+ * seed and then incremented, which left an `await` between "read the counter"
+ * and "advance the counter". Two updates landing back-to-back (a drag emits
+ * ~60 a second) could both resume from that await with the same value and be
+ * logged under DUPLICATE seq numbers — silently corrupting the replay
+ * timeline's x-axis on exactly the long sessions replay exists for. The
+ * caller now allocates with a synchronous read+increment after awaiting this,
+ * so no interleaving is possible.
+ */
+async function ensureSeeded(roomId) {
+  if (nextSeq.has(roomId)) return;
+  if (!seeding.has(roomId)) {
+    seeding.set(roomId, (async () => {
+      let start = 0;
+      if (persistent) {
+        try {
+          const last = await UpdateLog.findOne({ roomId }).sort({ seq: -1 }).lean();
+          if (last) start = last.seq + 1;
+        } catch (err) {
+          console.warn('[replay] could not read last seq:', err.message);
+        }
+      }
+      if (!nextSeq.has(roomId)) nextSeq.set(roomId, start);
+    })().finally(() => seeding.delete(roomId)));
   }
-  nextSeq.set(roomId, start);
-  return start;
+  await seeding.get(roomId);
 }
 
 /**
@@ -75,8 +96,12 @@ export async function appendUpdate(roomId, payload, meta = {}) {
   try {
     if (!roomId || !payload || !payload.length) return null;
 
-    const seq = await seedSeq(roomId);
+    await ensureSeeded(roomId);
+    // Atomic allocation: read + advance with NO await in between, so two
+    // rapid-fire updates can never claim the same seq (see ensureSeeded).
+    const seq = nextSeq.get(roomId);
     if (seq >= MAX_LOGS_PER_ROOM) return null; // capped: keep the head, drop the tail
+    nextSeq.set(roomId, seq + 1);
 
     const entry = {
       roomId,
@@ -86,8 +111,6 @@ export async function appendUpdate(roomId, payload, meta = {}) {
       username: meta.username || null,
       timestamp: new Date()
     };
-
-    nextSeq.set(roomId, seq + 1);
 
     if (persistent) {
       await UpdateLog.create(entry);
@@ -104,7 +127,9 @@ export async function appendUpdate(roomId, payload, meta = {}) {
 
 /**
  * The whole history for a room, oldest first. This ordering is the contract the
- * replay slider depends on — index N on the slider is entry N here.
+ * replay slider depends on — index N on the slider is entry N here. Memory mode
+ * sorts by seq too rather than trusting push order, so the read side upholds
+ * the contract by itself in both modes.
  */
 export async function getLogs(roomId) {
   try {
@@ -112,7 +137,7 @@ export async function getLogs(roomId) {
     if (persistent) {
       return await UpdateLog.find({ roomId }).sort({ seq: 1 }).lean();
     }
-    return (memory.get(roomId) || []).slice();
+    return (memory.get(roomId) || []).slice().sort((a, b) => a.seq - b.seq);
   } catch (err) {
     console.warn('[replay] read failed:', err.message);
     return [];

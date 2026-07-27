@@ -56,6 +56,8 @@ export default function ReplaySlider({ workspaceId, fetchLogs, onClose }) {
   const [capped, setCapped] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // { phase: 'downloading' | 'preparing', received, total } while loading
+  const [progress, setProgress] = useState(null);
 
   // index = how many updates have been applied. 0 = the empty board.
   const [index, setIndex] = useState(0);
@@ -81,33 +83,75 @@ export default function ReplaySlider({ workspaceId, fetchLogs, onClose }) {
   const lastGoodRef = useRef({ shapes: [], code: '' });
 
   // ---- load the log ----------------------------------------------------
+  // Two phases, both visible to the user and neither able to freeze the tab:
+  //
+  //  1. DOWNLOADING — the hook streams the history in chunks and reports
+  //     { received, total } as they land, so a long session shows a moving
+  //     progress bar instead of an inscrutable spinner.
+  //  2. PREPARING — the first frame shown is "now", which means applying the
+  //     WHOLE log once. Doing that synchronously in a render would lock the
+  //     UI thread for thousands of updates, so the cache is warmed in small
+  //     batches through setTimeout(0), yielding to the browser between
+  //     batches. Warming also lays down the cache's checkpoints, so the very
+  //     first backward scrub is already fast.
   useEffect(() => {
     let cancelled = false;
+    let warmTimer = null;
     setLoading(true);
     setError(null);
+    setProgress(null);
 
-    fetchLogsRef.current()
+    fetchLogsRef.current((p) => {
+      if (!cancelled) setProgress({ phase: 'downloading', ...p });
+    })
       .then((res) => {
         if (cancelled) return;
         if (!res?.ok) {
           setError(res?.message || 'Could not load the session history.');
           setEntries([]);
-        } else {
-          const list = Array.isArray(res.entries) ? res.entries : [];
-          setEntries(list);
-          setCapped(Boolean(res.capped));
-          setIndex(list.length); // open on "now", then scrub back
-          cacheRef.current = new ReplayCache(list);
+          setLoading(false);
+          return;
         }
+        const list = Array.isArray(res.entries) ? res.entries : [];
+        setEntries(list);
+        setCapped(Boolean(res.capped));
+        const cache = new ReplayCache(list);
+        cacheRef.current = cache;
+
+        if (!list.length) {
+          setLoading(false);
+          return;
+        }
+
+        const total = list.length;
+        const BATCH = 200; // updates applied per slice of the event loop
+        const warm = () => {
+          if (cancelled) return;
+          const next = Math.min(cache.builtTo + BATCH, total);
+          try {
+            cache.at(next);
+          } catch (err) {
+            console.error('[SyncSpace] replay: warm-up failed at', next, err);
+          }
+          setProgress({ phase: 'preparing', received: next, total });
+          if (next < total && cache.builtTo < total) {
+            warmTimer = setTimeout(warm, 0);
+          } else {
+            setIndex(total); // open on "now", then scrub back — O(1), already built
+            setLoading(false);
+          }
+        };
+        setProgress({ phase: 'preparing', received: 0, total });
+        warmTimer = setTimeout(warm, 0);
       })
       .catch(() => {
-        if (!cancelled) setError('Could not load the session history.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setError('Could not load the session history.');
+          setLoading(false);
+        }
       });
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(warmTimer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -236,7 +280,25 @@ export default function ReplaySlider({ workspaceId, fetchLogs, onClose }) {
         {loading ? (
           <div className="replay-empty">
             <div className="spinner" />
-            <p className="empty">Loading session history…</p>
+            <p className="empty">
+              {progress?.phase === 'preparing'
+                ? 'Preparing replay…'
+                : 'Loading session history…'}
+            </p>
+            {progress?.total > 0 && (
+              <>
+                <div className="replay-progress" role="progressbar"
+                  aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.received}>
+                  <div
+                    className="replay-progress-fill"
+                    style={{ width: `${Math.min(100, Math.round((progress.received / progress.total) * 100))}%` }}
+                  />
+                </div>
+                <p className="replay-progress-label">
+                  {progress.received} / {progress.total} updates
+                </p>
+              </>
+            )}
           </div>
         ) : error ? (
           <div className="replay-empty">
