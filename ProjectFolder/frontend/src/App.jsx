@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router";
 import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import Landing from "./pages/Landing.jsx";
 import CreateWorkspace from "./pages/CreateWorkspace.jsx";

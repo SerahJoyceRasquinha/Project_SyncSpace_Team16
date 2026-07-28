@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 
 /**
  * The app no longer drops you straight into a room. Two doors, that is all.

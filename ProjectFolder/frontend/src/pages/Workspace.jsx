@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, Link } from 'react-router';
 import { useCollaboration } from '../hooks/useCollaboration';
 import { useToasts } from '../hooks/useToasts';
 import { loadSession, clearSession } from '../utils/session';
