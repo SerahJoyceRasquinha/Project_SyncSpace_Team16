@@ -650,6 +650,27 @@ input:focus { border-color: var(--accent); }
 .run-block.muted { color: var(--muted); font-style: italic; }
 .run-note { font-size: 10px; color: #f59e0b; margin-top: 2px; }
 
+/* --- IDE: toolchain warning + collapsible long output --------------------- */
+.editor-warn {
+  padding: 6px 10px; font-size: 11px; line-height: 1.4;
+  background: rgba(245,158,11,0.12); color: #fcd34d;
+  border-bottom: 1px solid rgba(245,158,11,0.35);
+}
+.lang-select option:disabled { color: var(--muted); }
+.run-more {
+  background: none; border: none; padding: 2px 0; margin-bottom: 4px;
+  color: var(--accent); font-size: 11px; cursor: pointer; text-decoration: underline;
+}
+.run-more:hover { color: #c7d2fe; }
+
+/* --- IDE: remote-execution result rows ----------------------------------- */
+.run-provider { color: var(--accent); }
+.run-warn {
+  font-size: 11px; line-height: 1.4; margin: 2px 0 4px;
+  padding: 4px 8px; border-radius: 4px;
+  background: rgba(245,158,11,0.12); color: #fcd34d;
+}
+
 .editor-footer {
   display: flex; align-items: center; justify-content: space-between;
   padding: 4px 10px; border-top: 1px solid var(--line);

@@ -9,6 +9,7 @@ import { setPersistence as setStorePersistence } from "./services/workspaceStore
 import { setPersistence as setLogPersistence } from "./services/updateLogService.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
 import executeRoutes from "./routes/executeRoutes.js";
+import { executionStats } from "./services/execution/index.js";
 
 const PORT = process.env.PORT || 5000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -21,11 +22,29 @@ app.use(cors({ origin: CLIENT_ORIGIN }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", service: "syncspace-backend", time: new Date() });
+  res.json({
+    status: "ok",
+    service: "syncspace-backend",
+    time: new Date(),
+    execution: executionStats()
+  });
 });
 
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/execute", executeRoutes);
+
+// Malformed or oversized JSON must not become a 500 — the editor shows the
+// message verbatim, and "Something went wrong on our side" is a lie here.
+// eslint-disable-next-line no-unused-vars
+app.use("/api", (err, req, res, next) => {
+  if (err?.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "That request was not valid JSON." });
+  }
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "That program is too large to send (limit 1 MB)." });
+  }
+  return next(err);
+});
 
 // 404 for unknown API routes
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));

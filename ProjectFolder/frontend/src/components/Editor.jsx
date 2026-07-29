@@ -22,22 +22,45 @@ import '../monaco-setup'; // must run before the editor mounts
  *
  * The stdin box is local (each user experiments with their own input); the
  * results that come back are shared, tagged with who ran them.
+ *
+ * Two things the shared console has to respect:
+ *   1. a run result is replicated to every peer AND persisted, so the raw 64 KB
+ *      a program may emit is trimmed to SHARED_STREAM_CAP before it goes into
+ *      the ydoc — otherwise one print-loop bloats the snapshot for everyone;
+ *   2. long output is collapsed in the DOM behind "show all", so a 8 000-line
+ *      result cannot lock up the browser.
  */
 
+/**
+ * Used only until the server's catalog arrives (or if it never does). Matches
+ * the backend registry exactly — same ids, same Monaco grammar names.
+ * `available: true` is optimistic: the real answer comes from /execute/languages.
+ */
 const FALLBACK_LANGUAGES = [
-  { id: 'javascript', label: 'JavaScript (Node)', monaco: 'javascript' },
-  { id: 'python', label: 'Python 3', monaco: 'python' },
-  { id: 'java', label: 'Java', monaco: 'java' },
-  { id: 'cpp', label: 'C++ (g++)', monaco: 'cpp' },
-  { id: 'c', label: 'C (gcc)', monaco: 'c' }
+  { id: 'javascript', label: 'JavaScript (Node)', monaco: 'javascript', extension: '.js', available: true },
+  { id: 'python', label: 'Python 3', monaco: 'python', extension: '.py', available: true },
+  { id: 'c', label: 'C (gcc)', monaco: 'c', extension: '.c', available: true },
+  { id: 'cpp', label: 'C++ (g++)', monaco: 'cpp', extension: '.cpp', available: true },
+  { id: 'java', label: 'Java', monaco: 'java', extension: '.java', available: true }
 ];
 
 const HISTORY_CAP = 20;
+/** Per stream, per entry, before it is written into the shared document. */
+const SHARED_STREAM_CAP = 8 * 1024;
+/** How much of a block is shown before the "show all" toggle appears. */
+const PREVIEW_CHARS = 1500;
 
-const STARTER = {
-  javascript: '// SyncSpace IDE — JavaScript\n// Everyone in this room shares this file. Pick a language, hit Run.\n\nconst name = (require("fs").readFileSync(0, "utf8").trim()) || "world";\nconsole.log(`hello, ${name}`);\n',
-  python: '# SyncSpace IDE — Python\nimport sys\nname = sys.stdin.read().strip() or "world"\nprint(f"hello, {name}")\n'
-};
+const DEFAULT_STARTER =
+  '// SyncSpace IDE\n// Everyone in this room shares this file. Pick a language, hit Run.\n';
+
+/** Trim one stream for the shared doc, telling the reader it was trimmed. */
+function capForShare(text) {
+  if (typeof text !== 'string' || text.length <= SHARED_STREAM_CAP) return text || '';
+  return (
+    text.slice(0, SHARED_STREAM_CAP) +
+    `\n… ${text.length - SHARED_STREAM_CAP} more characters not shown (output trimmed before sharing)`
+  );
+}
 
 export default function Editor({ ydoc, awareness, workspaceId, session }) {
   const bindingRef = useRef(null);
@@ -48,11 +71,13 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
   const runHistory = useMemo(() => ydoc.getArray('runHistory'), [ydoc]);
 
   const [languages, setLanguages] = useState(FALLBACK_LANGUAGES);
+  const [provider, setProvider] = useState('');
   const [language, setLanguage] = useState(meta.get('language') || 'javascript');
   const [history, setHistory] = useState([]);
   const [runningNow, setRunningNow] = useState(false);
   const [stdin, setStdin] = useState('');
   const [showInput, setShowInput] = useState(false);
+  const [autoClear, setAutoClear] = useState(false);
   const [wordWrap, setWordWrap] = useState(false);
   const [theme, setTheme] = useState('vs-dark');
   const [fullscreen, setFullscreen] = useState(false);
@@ -61,11 +86,29 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
   const consoleRef = useRef(null);
   const dragRef = useRef(null);
 
+  // A ref, not the state flag: two Ctrl+Enter presses inside one React batch
+  // both read the OLD `runningNow`, so the state guard alone let duplicate
+  // executions through. The ref flips synchronously.
+  const runningRef = useRef(false);
+  const abortRef = useRef(null);
+  const languagesRef = useRef(languages);
+  useEffect(() => { languagesRef.current = languages; }, [languages]);
+
+  const active = languages.find((l) => l.id === language);
+  const unavailable = active ? active.available === false : false;
+
   // ---- ask the server which toolchains it actually has ------------------
   useEffect(() => {
     let alive = true;
     api.languages(workspaceId, session?.token)
-      .then((d) => { if (alive && d.languages?.length) setLanguages(d.languages); })
+      .then((d) => {
+        if (!alive) return;
+        if (d.languages?.length) setLanguages(d.languages);
+        // Code executes in a remote sandbox; nothing is compiled on this
+        // machine or on the server, so surface which service is doing it.
+        const reachable = d.providers?.probed?.find((x) => x.reachable);
+        setProvider(reachable?.label || d.providers?.configured?.[0] || '');
+      })
       .catch(() => {}); // offline / old backend: fall back to the static list
     return () => { alive = false; };
   }, [workspaceId, session?.token]);
@@ -78,6 +121,7 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
       const model = editorRef.current?.getModel();
       const monaco = monacoRef.current;
       const def = languages.find((x) => x.id === l);
+      // syntax highlighting follows the dropdown for EVERY collaborator
       if (model && monaco && def) monaco.editor.setModelLanguage(model, def.monaco);
     };
     meta.observe(sync);
@@ -85,8 +129,26 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
     return () => meta.unobserve(sync);
   }, [meta, languages]);
 
+  /** Is the buffer still an untouched template (or empty)? */
+  const isTemplate = useCallback((text) => {
+    const t = (text || '').trim();
+    if (!t) return true;
+    if (t === DEFAULT_STARTER.trim()) return true;
+    return languagesRef.current.some((l) => (l.starter || '').trim() === t);
+  }, []);
+
   const changeLanguage = (id) => {
-    ydoc.transact(() => meta.set('language', id)); // shared: switches for everyone
+    const def = languagesRef.current.find((l) => l.id === id);
+    ydoc.transact(() => {
+      meta.set('language', id); // shared: switches for everyone
+      // Swap in the new language's template only while nobody has written
+      // anything yet — never destroy real work to "help".
+      const ytext = ydoc.getText('monaco');
+      if (def?.starter && isTemplate(ytext.toString())) {
+        ytext.delete(0, ytext.length);
+        ytext.insert(0, def.starter);
+      }
+    });
   };
 
   // ---- shared console: observe the run history -------------------------
@@ -109,11 +171,15 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
     monacoRef.current = monaco;
 
     const ytext = ydoc.getText('monaco');
-    if (ytext.length === 0) ytext.insert(0, STARTER.javascript);
+    if (ytext.length === 0) {
+      const id = meta.get('language') || 'javascript';
+      const def = languagesRef.current.find((x) => x.id === id);
+      ytext.insert(0, def?.starter || DEFAULT_STARTER);
+    }
 
     bindingRef.current = new MonacoBinding(ytext, editor.getModel(), new Set([editor]), awareness);
 
-    const def = languages.find((x) => x.id === (meta.get('language') || 'javascript'));
+    const def = languagesRef.current.find((x) => x.id === (meta.get('language') || 'javascript'));
     if (def) monaco.editor.setModelLanguage(editor.getModel(), def.monaco);
 
     editor.onDidChangeCursorPosition((e) =>
@@ -126,7 +192,10 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
       editor.getAction('editor.action.gotoLine')?.run());
   };
 
-  useEffect(() => () => bindingRef.current?.destroy(), []);
+  useEffect(() => () => {
+    bindingRef.current?.destroy();
+    abortRef.current?.abort(); // never leave a request running after unmount
+  }, []);
 
   // ---- run --------------------------------------------------------------
   const appendResult = useCallback((entry) => {
@@ -136,40 +205,66 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
     });
   }, [ydoc, runHistory]);
 
+  const clearConsole = useCallback(() => {
+    ydoc.transact(() => runHistory.delete(0, runHistory.length));
+  }, [ydoc, runHistory]);
+
   const run = useCallback(async () => {
+    if (runningRef.current) return; // synchronous re-entrancy guard
     const code = editorRef.current?.getValue() ?? '';
-    if (!code.trim() || runningNow) return;
+    const def = languagesRef.current.find((l) => l.id === language);
+
+    const stamp = () => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      at: Date.now(),
+      by: session?.username || 'someone',
+      language
+    });
+
+    // Refuse locally for the two cases the server would only repeat back, so
+    // nothing in the dropdown can ever produce an "unsupported language" error.
+    if (def && def.available === false) {
+      appendResult({ ...stamp(), ok: false, phase: 'setup', stderr: def.note || `${def.label} is not installed on this server.` });
+      return;
+    }
+    if (!code.trim()) {
+      appendResult({ ...stamp(), ok: false, phase: 'setup', stderr: 'There is no code to run.' });
+      return;
+    }
+
+    runningRef.current = true;
     setRunningNow(true);
+    if (autoClear) clearConsole();
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const { result } = await api.execute(workspaceId, session?.token, {
-        language, code, stdin
-      });
+      const { result } = await api.execute(
+        workspaceId, session?.token,
+        { language, code, stdin },
+        { signal: controller.signal }
+      );
       appendResult({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        at: Date.now(),
-        by: session?.username || 'someone',
-        ...result
+        ...stamp(),
+        ...result,
+        stdout: capForShare(result?.stdout),
+        stderr: capForShare(result?.stderr),
+        compileOutput: capForShare(result?.compileOutput)
       });
     } catch (err) {
-      appendResult({
-        id: `${Date.now()}-err`,
-        at: Date.now(),
-        by: session?.username || 'someone',
-        ok: false,
-        phase: 'setup',
-        language,
-        stderr: err.message
-      });
+      // Network failure, timeout, 429, auth — all end up here as one readable
+      // line. The editor itself keeps working either way.
+      appendResult({ ...stamp(), ok: false, phase: 'setup', stderr: err.message });
     } finally {
+      abortRef.current = null;
+      runningRef.current = false;
       setRunningNow(false);
     }
-  }, [language, stdin, runningNow, workspaceId, session, appendResult]);
+  }, [language, stdin, autoClear, workspaceId, session, appendResult, clearConsole]);
+
   const runRef = useRef(run);
   useEffect(() => { runRef.current = run; }, [run]);
-
-  const clearConsole = () => {
-    ydoc.transact(() => runHistory.delete(0, runHistory.length));
-  };
 
   // ---- console resize (drag the divider) --------------------------------
   const onDividerDown = (e) => {
@@ -189,7 +284,7 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
     window.addEventListener('mouseup', up);
   };
 
-  const langLabel = languages.find((l) => l.id === language)?.label || language;
+  const langLabel = active?.label || language;
 
   return (
     <div className={'pane editor-pane' + (fullscreen ? ' fullscreen' : '')}>
@@ -202,10 +297,19 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
           onChange={(e) => changeLanguage(e.target.value)}
           title="Language (shared with everyone in the room)"
         >
-          {languages.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+          {languages.map((l) => (
+            <option key={l.id} value={l.id} disabled={l.available === false}>
+              {l.label}{l.available === false ? ' — unavailable' : ''}
+            </option>
+          ))}
         </select>
 
-        <button className="run-btn" onClick={run} disabled={runningNow} title="Run (Ctrl+Enter)">
+        <button
+          className="run-btn"
+          onClick={run}
+          disabled={runningNow || unavailable}
+          title={unavailable ? (active?.note || 'This toolchain is not installed on the server.') : 'Run (Ctrl+Enter)'}
+        >
           {runningNow ? <span className="run-spinner" /> : '▶'} {runningNow ? 'Running…' : 'Run'}
         </button>
 
@@ -227,6 +331,12 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
           {fullscreen ? '⤡' : '⤢'}
         </button>
       </div>
+
+      {unavailable && (
+        <div className="editor-warn">
+          {active?.note || `${langLabel} is not installed on this server.`}
+        </div>
+      )}
 
       <div className="editor-body">
         <MonacoEditor
@@ -266,8 +376,13 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
       <div className="console" style={{ height: consoleHeight }}>
         <div className="console-head">
           <span>Output</span>
-          <span className="console-lang">{langLabel}</span>
+          <span className="console-lang">{langLabel}{provider ? ` · runs on ${provider}` : ''}</span>
           <div className="ed-spacer" />
+          <button
+            className={'ed-btn' + (autoClear ? ' on' : '')}
+            onClick={() => setAutoClear((v) => !v)}
+            title="Clear the console automatically before each run"
+          >auto-clear</button>
           <button className="ed-btn" onClick={clearConsole}
             disabled={!history.length} title="Clear output for everyone">Clear</button>
         </div>
@@ -279,7 +394,11 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
             </div>
           )}
           {history.map((r) => <RunResult key={r.id} r={r} />)}
-          {runningNow && <div className="console-running">running…</div>}
+          {runningNow && (
+            <div className="console-running">
+              {active?.compiled ? 'compiling and running…' : 'running…'}
+            </div>
+          )}
         </div>
       </div>
 
@@ -291,32 +410,64 @@ export default function Editor({ ydoc, awareness, workspaceId, session }) {
   );
 }
 
-/** One entry in the shared console. */
+/** A long stream, collapsed until asked for — a 60 000-line dump must not stall the tab. */
+function OutputBlock({ text, className }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  const long = text.length > PREVIEW_CHARS;
+  const shown = long && !open ? text.slice(0, PREVIEW_CHARS) : text;
+  return (
+    <>
+      <pre className={className}>{shown}{long && !open ? '…' : ''}</pre>
+      {long && (
+        <button className="run-more" onClick={() => setOpen((v) => !v)}>
+          {open ? 'show less' : `show all (${text.length.toLocaleString()} characters)`}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** One entry in the shared console. Identical for every language and provider. */
 function RunResult({ r }) {
   const time = new Date(r.at).toLocaleTimeString();
+
+  // Driven entirely by the canonical `status` field, so the panel looks and
+  // behaves the same whether the code ran on Judge0, Piston or paiza.io.
   const status =
-    r.phase === 'compile' ? 'compile error'
-    : r.phase === 'setup' ? 'error'
-    : r.timedOut ? 'timed out'
-    : r.exitCode === 0 ? 'finished'
-    : `exit ${r.exitCode}`;
+    r.status === 'ok' ? 'finished'
+      : r.status === 'compile_error' ? 'compile error'
+        : r.status === 'timeout' ? 'timed out'
+          : r.status === 'runtime_error'
+            ? (r.signal ? `crashed (${r.signal})` : `exit ${r.exitCode}`)
+            : r.status === 'rate_limited' ? 'rate limited'
+              : r.status === 'unavailable' ? 'service unavailable'
+                : r.status === 'invalid_request' ? 'not run'
+                  : 'error';
 
   return (
     <div className={'run-entry' + (r.ok ? ' ok' : ' fail')}>
       <div className="run-meta">
         <span className={'run-status' + (r.ok ? ' ok' : ' fail')}>{status}</span>
         <span>{r.language}</span>
+        {r.providerLabel && <span className="run-provider">{r.providerLabel}</span>}
         {typeof r.durationMs === 'number' && <span>{r.durationMs} ms</span>}
-        {typeof r.exitCode === 'number' && r.phase === 'run' && <span>exit {r.exitCode}</span>}
+        {r.memoryKb > 0 && <span>{Math.round(r.memoryKb / 1024)} MB</span>}
+        {r.queuedMs > 50 && <span>queued {Math.round(r.queuedMs)} ms</span>}
+        {r.attempts > 1 && <span>{r.attempts} providers tried</span>}
         <span className="run-by">{r.by} · {time}</span>
       </div>
-      {r.compileOutput && <pre className="run-block compile">{r.compileOutput}</pre>}
-      {r.stdout && <pre className="run-block">{r.stdout}</pre>}
-      {r.stderr && <pre className="run-block err">{r.stderr}</pre>}
+
+      {r.warnings?.map((w, i) => <div className="run-warn" key={i}>{w}</div>)}
+      {!r.ok && r.statusText && <div className="run-note">{r.statusText}</div>}
+
+      <OutputBlock text={r.compileOutput} className="run-block compile" />
+      <OutputBlock text={r.stdout} className="run-block" />
+      <OutputBlock text={r.stderr} className="run-block err" />
       {!r.stdout && !r.stderr && !r.compileOutput && (
         <pre className="run-block muted">(no output)</pre>
       )}
-      {r.truncated && <div className="run-note">output truncated at 64 KB</div>}
+      {r.truncated && <div className="run-note">output was truncated at 64 KB</div>}
     </div>
   );
 }

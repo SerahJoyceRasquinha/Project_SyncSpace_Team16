@@ -63,8 +63,18 @@ export function validateWorkspaceId(raw) {
  */
 const attempts = new Map();
 
+let lastSweep = 0;
+
+/** Drop expired buckets so a long-lived server does not accumulate keys. */
+function sweep(now) {
+  if (now - lastSweep < 60_000) return;
+  lastSweep = now;
+  for (const [k, v] of attempts) if (now > v.resetAt) attempts.delete(k);
+}
+
 export function rateLimit(key, { max = 10, windowMs = 60_000 } = {}) {
   const now = Date.now();
+  sweep(now);
   const entry = attempts.get(key);
   if (!entry || now > entry.resetAt) {
     attempts.set(key, { count: 1, resetAt: now + windowMs });
@@ -72,8 +82,12 @@ export function rateLimit(key, { max = 10, windowMs = 60_000 } = {}) {
   }
   entry.count += 1;
   if (entry.count > max) {
-    const wait = Math.ceil((entry.resetAt - now) / 1000);
-    return { ok: false, message: `Too many attempts. Try again in ${wait} seconds.` };
+    const wait = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    return {
+      ok: false,
+      retryAfter: wait,
+      message: `Too many attempts. Try again in ${wait} seconds.`
+    };
   }
   return { ok: true };
 }

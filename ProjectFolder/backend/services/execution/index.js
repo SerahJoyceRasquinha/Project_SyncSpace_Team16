@@ -1,169 +1,299 @@
-import { mkdtemp, writeFile, rm } from 'fs/promises';
-import { tmpdir } from 'os';
-import path from 'path';
-import { LANGUAGES, LANGUAGE_IDS } from './languages.js';
-import { runProcess } from './runner.js';
+import { LANGUAGES, LANGUAGE_IDS, isLanguage, baseCatalog, preflightWarning } from './languages.js';
+import { resolveChain, PROVIDERS, DEFAULT_CHAIN } from './providers/index.js';
+import { STATUS, ProviderError, makeResult } from './result.js';
+import { log } from './http.js';
 
 /**
- * The execution service. Completely independent of the collaboration server:
- * it imports nothing from socketService / workspaceStore and exposes exactly
- * one function, executeCode(). The route layer decides who may call it; this
- * layer only knows how to run code safely.
+ * The execution orchestrator — provider-agnostic by construction.
  *
- * Pipeline per request:
- *   temp dir -> write source -> [compile] -> run (with stdin) -> cleanup
+ * It knows about queueing, validation, timeouts and fallback. It does NOT know
+ * what Judge0 or Piston are: it walks a chain of adapters, each of which
+ * returns the canonical result shape from result.js. Swapping providers is an
+ * .env change; adding one is a new file in providers/.
  *
- * A small FIFO queue caps concurrent executions so a burst of Run clicks
- * cannot fork-bomb the host; queued requests report their wait honestly.
+ * It also stays completely independent of the collaboration server. It imports
+ * nothing from socketService or workspaceStore and holds no per-workspace
+ * state, so a run cannot touch document sync, the whiteboard, replay, the
+ * waiting room or admin controls. Isolation between users is therefore
+ * structural rather than something we have to remember to enforce: each call
+ * is a self-contained request to a remote sandbox, keyed by nothing.
  */
 
-const COMPILE_TIMEOUT_MS = Number(process.env.EXEC_COMPILE_TIMEOUT_MS) || 15000;
-const RUN_TIMEOUT_MS = Number(process.env.EXEC_RUN_TIMEOUT_MS) || 5000;
-const MAX_CONCURRENT = Number(process.env.EXEC_MAX_CONCURRENT) || 2;
-const MAX_CODE_BYTES = 256 * 1024;
-const MAX_STDIN_BYTES = 64 * 1024;
+const RUN_TIMEOUT_MS = Number(process.env.EXEC_RUN_TIMEOUT_MS) || 8000;
+const MEMORY_KB = Number(process.env.EXEC_MEMORY_KB) || 128000;
+const MAX_CONCURRENT = Number(process.env.EXEC_MAX_CONCURRENT) || 8;
+const MAX_QUEUE = Number(process.env.EXEC_MAX_QUEUE) || 32;
+const QUEUE_TIMEOUT_MS = Number(process.env.EXEC_QUEUE_TIMEOUT_MS) || 20000;
+const MAX_CODE_BYTES = Number(process.env.EXEC_MAX_CODE_BYTES) || 256 * 1024;
+const MAX_STDIN_BYTES = Number(process.env.EXEC_MAX_STDIN_BYTES) || 64 * 1024;
+const PROBE_TTL_MS = Number(process.env.EXEC_PROBE_TTL_MS) || 5 * 60 * 1000;
 
-// ------------------------------------------------------------------ queue
+// Concurrency here protects OUR backend's sockets and the provider's rate
+// limit, not a CPU: the work happens elsewhere, so the cap is far higher than
+// it was when we forked compilers locally.
 let running = 0;
 const waiting = [];
 
 function acquireSlot() {
   if (running < MAX_CONCURRENT) {
     running += 1;
-    return Promise.resolve();
+    return Promise.resolve({ ok: true, queuedMs: 0 });
   }
-  return new Promise((resolve) => waiting.push(resolve));
+  if (waiting.length >= MAX_QUEUE) {
+    return Promise.resolve({
+      ok: false,
+      reason: 'The server is already running as much code as it can handle. Try again in a moment.'
+    });
+  }
+  return new Promise((resolve) => {
+    const at = Date.now();
+    const entry = {
+      settle(ok) {
+        if (entry.done) return;
+        entry.done = true;
+        clearTimeout(entry.timer);
+        const i = waiting.indexOf(entry);
+        if (i !== -1) waiting.splice(i, 1);
+        resolve(ok
+          ? { ok: true, queuedMs: Date.now() - at }
+          : { ok: false, reason: 'Timed out waiting for a free execution slot. The server is busy — try again.' });
+      }
+    };
+    entry.timer = setTimeout(() => entry.settle(false), QUEUE_TIMEOUT_MS);
+    entry.timer.unref?.();
+    waiting.push(entry);
+  });
 }
 
 function releaseSlot() {
-  const next = waiting.shift();
-  if (next) next();
-  else running -= 1;
+  while (waiting.length) {
+    const next = waiting.shift();
+    if (next.done) continue;
+    next.settle(true);
+    return;
+  }
+  running = Math.max(0, running - 1);
 }
 
-// --------------------------------------------------------------- pipeline
-/**
- * On POSIX the sandbox wraps commands in a shell, so a missing binary is not an
- * ENOENT from spawn — it is the shell exiting 127 with "not found" on stderr.
- * Both spellings mean the same thing: the toolchain is not installed.
- */
-const toolchainMissing = (res) =>
-  res.exitCode === 127 && /not found|command not found/i.test(res.stderr || '');
+// ----------------------------------------------------------- provider probe
+let probe = { at: 0, inFlight: null, results: null };
 
-const missingToolchainMessage = (lang) =>
-  `The ${lang.label} toolchain (${lang.toolcheck}) is not installed on the server, ` +
-  `so this language cannot run here yet. Ask the workspace host to install it.`;
+async function probeProviders(force = false) {
+  if (!force && probe.results && Date.now() - probe.at < PROBE_TTL_MS) return probe.results;
+  if (probe.inFlight) return probe.inFlight;
 
-/**
- * Execute one snippet.
- * Always RESOLVES with a result object — errors become structured fields, so
- * the route never has to guess which failures are the user's code vs ours:
- *
- * {
- *   ok, phase: 'run' | 'compile' | 'setup',
- *   stdout, stderr, compileOutput,
- *   exitCode, timedOut, truncated, durationMs, language
- * }
- */
-export async function executeCode({ language, code, stdin = '' }) {
-  const lang = LANGUAGES[language];
-  if (!lang) {
-    return {
-      ok: false, phase: 'setup', language,
-      stderr: `Unknown language "${language}". Supported: ${LANGUAGE_IDS.join(', ')}.`
-    };
-  }
-  if (typeof code !== 'string' || !code.trim()) {
-    return { ok: false, phase: 'setup', language, stderr: 'There is no code to run.' };
-  }
-  if (Buffer.byteLength(code) > MAX_CODE_BYTES) {
-    return { ok: false, phase: 'setup', language, stderr: 'Program too large (max 256 KB).' };
-  }
-  const input = typeof stdin === 'string' ? stdin.slice(0, MAX_STDIN_BYTES) : '';
-
-  await acquireSlot();
-  let dir;
-  try {
-    dir = await mkdtemp(path.join(tmpdir(), 'syncspace-run-'));
-    const filename = lang.file(code);
-    await writeFile(path.join(dir, filename), code, 'utf8');
-
-    // ---- compile (only for compiled languages) -----------------------
-    if (lang.compile) {
-      const c = lang.compile(filename);
-      let compiled;
+  probe.inFlight = (async () => {
+    const chain = resolveChain();
+    const results = [];
+    for (const p of chain) {
+      if (!p.configured()) {
+        results.push({ name: p.name, label: p.label, configured: false, reachable: false, languages: [], hint: p.hint() });
+        continue;
+      }
       try {
-        compiled = await runProcess(c.cmd, c.args, {
-          cwd: dir,
-          timeoutMs: COMPILE_TIMEOUT_MS,
-          vmLimit: !lang.managed
-        });
+        const languages = await p.languages({});
+        results.push({ name: p.name, label: p.label, configured: true, reachable: true, languages, hint: null });
+        log('probe-ok', { provider: p.name, languages: languages.length });
       } catch (err) {
-        return err.code === 'ENOENT'
-          ? { ok: false, phase: 'setup', language, stderr: missingToolchainMessage(lang) }
-          : { ok: false, phase: 'setup', language, stderr: `Could not start the compiler: ${err.message}` };
-      }
-      if (toolchainMissing(compiled)) {
-        return { ok: false, phase: 'setup', language, stderr: missingToolchainMessage(lang) };
-      }
-      if (compiled.timedOut) {
-        return { ok: false, phase: 'compile', language, compileOutput: compiled.stderr, stderr: 'Compilation timed out.' };
-      }
-      if (compiled.exitCode !== 0) {
-        return {
-          ok: false, phase: 'compile', language,
-          compileOutput: (compiled.stderr || compiled.stdout || '').trim(),
-          stderr: 'Compilation failed.', durationMs: compiled.durationMs
-        };
+        results.push({
+          name: p.name, label: p.label, configured: true, reachable: false, languages: [],
+          hint: err.message
+        });
+        log('probe-failed', { provider: p.name, error: err.message });
       }
     }
+    probe = { at: Date.now(), inFlight: null, results };
+    return results;
+  })();
 
-    // ---- run ----------------------------------------------------------
-    const r = lang.run(lang.file(code));
-    let result;
-    try {
-      result = await runProcess(r.cmd, r.args, {
-        cwd: dir,
-        stdin: input,
-        timeoutMs: RUN_TIMEOUT_MS,
-        vmLimit: !lang.managed
-      });
-    } catch (err) {
-      return err.code === 'ENOENT'
-        ? { ok: false, phase: 'setup', language, stderr: missingToolchainMessage(lang) }
-        : { ok: false, phase: 'setup', language, stderr: `Could not start the program: ${err.message}` };
-    }
+  return probe.inFlight;
+}
 
-    if (toolchainMissing(result)) {
-      return { ok: false, phase: 'setup', language, stderr: missingToolchainMessage(lang) };
-    }
+export async function refreshProviders() {
+  await probeProviders(true);
+  return providerStatus();
+}
 
+export function providerStatus() {
+  const chain = resolveChain();
+  return {
+    chain: chain.map((p) => p.name),
+    configured: chain.filter((p) => p.configured()).map((p) => p.name),
+    probed: probe.results || null,
+    probedAt: probe.at || null
+  };
+}
+
+export function executionStats() {
+  return { running, queued: waiting.length, maxConcurrent: MAX_CONCURRENT, maxQueue: MAX_QUEUE };
+}
+
+// ------------------------------------------------------------------ catalog
+/**
+ * The dropdown.
+ *
+ * Availability is deliberately optimistic until a probe has completed: the
+ * catalog must answer instantly when the editor mounts, and blocking it behind
+ * a network round trip would make the UI feel broken. Once a probe lands, the
+ * answer becomes exact and the client can refresh.
+ */
+export async function languageCatalog({ wait = false } = {}) {
+  const chain = resolveChain();
+  const anyConfigured = chain.some((p) => p.configured());
+
+  let probed = probe.results;
+  if (wait || !probed) {
+    const p = probeProviders();
+    if (wait) probed = await p;
+  }
+
+  const supported = probed
+    ? new Set(probed.filter((r) => r.reachable).flatMap((r) => r.languages))
+    : null;
+
+  const languages = baseCatalog().map((l) => {
+    const available = supported ? supported.has(l.id) : anyConfigured;
     return {
-      ok: !result.timedOut && result.exitCode === 0,
-      phase: 'run',
-      language,
-      stdout: result.stdout,
-      stderr: result.timedOut
-        ? `${result.stderr}\n[terminated: exceeded the ${RUN_TIMEOUT_MS / 1000}s time limit]`.trim()
-        : result.stderr,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      truncated: result.truncated,
-      durationMs: result.durationMs
+      ...l,
+      available,
+      note: available ? undefined : unavailableNote(l, probed, anyConfigured)
     };
-  } catch (err) {
-    return { ok: false, phase: 'setup', language, stderr: `Execution failed: ${err.message}` };
+  });
+
+  return { languages, providers: providerStatus(), stats: executionStats() };
+}
+
+function unavailableNote(lang, probed, anyConfigured) {
+  if (!anyConfigured) {
+    return `No execution provider is configured. Set JUDGE0_URL and JUDGE0_KEY in backend/.env (see EXECUTION.md), or leave paiza.io enabled for a no-signup fallback.`;
+  }
+  if (!probed) return `Checking which execution providers can run ${lang.label}…`;
+  const reachable = probed.filter((r) => r.reachable);
+  if (!reachable.length) {
+    return `No execution provider is reachable right now. ${probed.map((r) => `${r.label}: ${r.hint || 'unavailable'}`).join(' · ')}`;
+  }
+  return `None of the reachable providers offers ${lang.label}.`;
+}
+
+// ------------------------------------------------------------------ execute
+/**
+ * Run one snippet. Always RESOLVES with the canonical result shape — a failure
+ * is data, never an exception, because the editor has to render the reason.
+ */
+export async function executeCode({ language, code, stdin = '', meta = {} } = {}) {
+  const invalid = validate({ language, code, stdin });
+  if (invalid) return invalid;
+
+  const warnings = [];
+  const preflight = preflightWarning(language, code);
+  if (preflight) warnings.push(preflight);
+
+  let input = typeof stdin === 'string' ? stdin : '';
+  if (Buffer.byteLength(input) > MAX_STDIN_BYTES) {
+    input = Buffer.from(input).subarray(0, MAX_STDIN_BYTES).toString('utf8');
+    warnings.push(`Program input was clipped to ${MAX_STDIN_BYTES / 1024} KB.`);
+  }
+  // scanf / getline / Scanner all expect a terminator after the last value
+  if (input && !input.endsWith('\n')) input += '\n';
+
+  const slot = await acquireSlot();
+  if (!slot.ok) {
+    return makeResult({
+      language, status: STATUS.UNAVAILABLE, phase: 'setup',
+      stderr: slot.reason, statusText: slot.reason, warnings
+    });
+  }
+
+  const chain = resolveChain();
+  const failures = [];
+  let attempts = 0;
+  const startedAt = Date.now();
+
+  try {
+    for (const provider of chain) {
+      if (!provider.configured()) {
+        failures.push(`${provider.label}: not configured. ${provider.hint()}`);
+        continue;
+      }
+      if (!LANGUAGES[language].providers[provider.name]) {
+        failures.push(`${provider.label}: no runtime mapping for ${LANGUAGES[language].label}.`);
+        continue;
+      }
+
+      attempts += 1;
+      try {
+        log('run', { provider: provider.name, language, workspace: meta.workspaceId, bytes: Buffer.byteLength(code) });
+        const result = await provider.execute({
+          language,
+          code,
+          stdin: input,
+          timeoutMs: RUN_TIMEOUT_MS,
+          memoryKb: MEMORY_KB
+        });
+        log('run-done', {
+          provider: provider.name, language, status: result.status,
+          ms: Date.now() - startedAt, exit: result.exitCode
+        });
+        return { ...result, attempts, queuedMs: slot.queuedMs, warnings: [...warnings, ...result.warnings] };
+      } catch (err) {
+        const message = err instanceof ProviderError ? err.message : `Unexpected error: ${err.message}`;
+        failures.push(`${provider.label}: ${message}`);
+        log('run-failed', { provider: provider.name, language, error: message });
+
+        // A provider that rejected the REQUEST will reject it again; only fall
+        // through when the provider itself is the problem.
+        if (err instanceof ProviderError && err.status === STATUS.INVALID_REQUEST) break;
+      }
+    }
+
+    const status = failures.length ? STATUS.UNAVAILABLE : STATUS.INVALID_REQUEST;
+    return makeResult({
+      language, status, phase: 'setup', attempts, warnings,
+      statusText: 'Could not run the code — no execution provider was able to take it.',
+      stderr: [
+        'Could not run the code. Every configured execution provider failed:',
+        ...failures.map((f) => `  • ${f}`),
+        '',
+        'See EXECUTION.md for how to configure a provider.'
+      ].join('\n')
+    });
   } finally {
     releaseSlot();
-    if (dir) rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-/** What the frontend needs to build its language dropdown. */
-export function languageCatalog() {
-  return LANGUAGE_IDS.map((id) => ({
-    id,
-    label: LANGUAGES[id].label,
-    monaco: LANGUAGES[id].monaco
-  }));
+function validate({ language, code, stdin }) {
+  if (typeof language !== 'string' || !language) {
+    return makeResult({
+      language: null, status: STATUS.INVALID_REQUEST, phase: 'setup',
+      stderr: 'Pick a language before running the code.'
+    });
+  }
+  if (!isLanguage(language)) {
+    return makeResult({
+      language, status: STATUS.INVALID_REQUEST, phase: 'setup',
+      stderr: `Unknown language "${language}". Supported: ${LANGUAGE_IDS.join(', ')}.`
+    });
+  }
+  if (typeof code !== 'string' || !code.trim()) {
+    return makeResult({
+      language, status: STATUS.INVALID_REQUEST, phase: 'setup',
+      stderr: 'There is no code to run.'
+    });
+  }
+  if (Buffer.byteLength(code) > MAX_CODE_BYTES) {
+    return makeResult({
+      language, status: STATUS.INVALID_REQUEST, phase: 'setup',
+      stderr: `Program too large (limit ${MAX_CODE_BYTES / 1024} KB).`
+    });
+  }
+  if (stdin !== undefined && stdin !== null && typeof stdin !== 'string') {
+    return makeResult({
+      language, status: STATUS.INVALID_REQUEST, phase: 'setup',
+      stderr: 'Program input (stdin) must be sent as text.'
+    });
+  }
+  return null;
 }
+
+export { PROVIDERS, DEFAULT_CHAIN, LANGUAGE_IDS };
