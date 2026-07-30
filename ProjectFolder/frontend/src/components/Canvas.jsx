@@ -68,6 +68,13 @@ export default function Canvas({ ydoc, awareness }) {
   const [pendingShape, setPendingShape] = useState(null); // { type } chosen from Shapes menu
   const [connPreset, setConnPreset] = useState(null);     // preset for the connector tool
   const [selectedIds, setSelectedIds] = useState([]);
+  // Whether the active freehand tool (pen/eraser) has already begun a stroke
+  // since it was last (re)selected. This is the ONLY extra bit of UI state the
+  // panel system needs: the brush/eraser panel is shown iff a freehand tool is
+  // active AND drawing has not yet started, so the moment the user puts pen to
+  // canvas the panel gets out of the way and only comes back when the tool is
+  // explicitly (re)selected. It is a LOCAL interface flag — never synced.
+  const [drawingStarted, setDrawingStarted] = useState(false);
   const [pendingSticker, setPendingSticker] = useState(null); // { svg, name } pending placement
   const [preview, setPreview] = useState(null); // live drag-to-create ghost
   const [editingText, setEditingText] = useState(null); // { id?, x, y, value, ... }
@@ -277,9 +284,42 @@ export default function Canvas({ ydoc, awareness }) {
     if (tool !== 'eraser') setEraserPos(null);
   }, [tool]);
 
-  const selectedShape = selectedIds.length === 1
-    ? shapes.find((s) => s.id === selectedIds[0])
-    : null;
+  // ---- keep the selection referentially honest --------------------------
+  // The selection is the single source of truth the property panel reads from,
+  // so it must never point at a shape that has left the document. A shape can
+  // vanish from under the selection for many reasons that are NOT a local
+  // delete: a collaborator deletes it, the eraser consumes a selected stroke,
+  // an undo/redo pops it, or a replay rebuilds the board. In every one of those
+  // cases this prunes the stale id, which makes the panel disappear on the same
+  // commit — no extra click, no panel left belonging to a gone object. Returning
+  // the SAME array when nothing changed keeps this from causing a re-render loop.
+  useEffect(() => {
+    setSelectedIds((cur) => {
+      if (!cur.length) return cur;
+      const live = new Set(shapes.map((s) => s.id));
+      const next = cur.filter((id) => live.has(id));
+      return next.length === cur.length ? cur : next;
+    });
+  }, [shapes]);
+
+  // A stable id -> record map over the COMMITTED shapes (distinct from the
+  // live-position `shapesById` used for connector routing): the property panel
+  // reads from this so a shape's transient drag position never churns the
+  // panel's props (livePos changes would otherwise re-render it every mouse-move
+  // mid-drag). Committed values are exactly what the panel should show anyway.
+  const committedById = useMemo(() => {
+    const m = new Map();
+    for (const s of shapes) m.set(s.id, s);
+    return m;
+  }, [shapes]);
+
+  // The resolved selection: exactly the currently-selected records that still
+  // exist. Everything panel-related derives from this one array.
+  const selectedShapes = useMemo(
+    () => selectedIds.map((id) => committedById.get(id)).filter(Boolean),
+    [selectedIds, committedById]
+  );
+  const selectedShape = selectedShapes.length === 1 ? selectedShapes[0] : null;
 
   // ---------------------------------------------------------------- helpers
   /**
@@ -327,10 +367,40 @@ export default function Canvas({ ydoc, awareness }) {
     setSelectedIds(ids);
   }, [shapes, selectedIds, ydoc, me]);
 
-  const startConnectorTool = useCallback((preset) => {
-    setConnPreset(preset || {});
-    setTool('connector');
+  // ---- one place that changes the active tool ---------------------------
+  // Panel visibility is entirely state-driven off `tool` + `selectedIds` +
+  // `drawingStarted`, so every tool switch funnels through here to keep those
+  // invariants true, rather than each call site poking state ad hoc:
+  //   • re-arm the freehand panel (drawingStarted -> false) so re-picking Pen
+  //     or Eraser always brings its panel back,
+  //   • clear the selection whenever we leave Select, so a shape's property
+  //     panel and a tool's own panel can never be open at the same time (there
+  //     is always exactly one contextual panel).
+  // Switching TO Select intentionally keeps the current selection so the user
+  // can go straight to editing what they just made (or pressed V to grab).
+  const selectTool = useCallback((t) => {
     setPendingShape(null);
+    setConnPreset(null);
+    setDrawingStarted(false);
+    if (t !== 'select') setSelectedIds([]);
+    setTool(t);
+  }, []);
+
+  /** Arm one of the drag-to-create shape tools (rect/circle/star/… from menu). */
+  const beginShapeTool = useCallback((shape) => {
+    setSelectedIds([]);
+    setDrawingStarted(false);
+    setConnPreset(null);
+    setPendingShape(shape);
+    setTool('shape');
+  }, []);
+
+  const startConnectorTool = useCallback((preset) => {
+    setSelectedIds([]);
+    setDrawingStarted(false);
+    setConnPreset(preset || {});
+    setPendingShape(null);
+    setTool('connector');
   }, []);
 
   /** Build the endpoint record for a snap result (or a free point). */
@@ -518,6 +588,9 @@ export default function Canvas({ ydoc, awareness }) {
       draftRef.current = { points: [pos.x, pos.y], tpl: strokeTemplate() };
       setDraft({ ...draftRef.current.tpl, points: [pos.x, pos.y] });
       drawing.current = { kind: 'pen' };
+      // pen is now on the canvas: retire the brush panel so it never floats
+      // over the stroke. It returns only when Pen is explicitly re-selected.
+      if (!drawingStarted) setDrawingStarted(true);
       return;
     }
 
@@ -528,6 +601,8 @@ export default function Canvas({ ydoc, awareness }) {
       setEraserPos(pos);
       awareness.setLocalStateField('eraser', { x: pos.x, y: pos.y, size: eraserSettings.size });
       eraseAlong(pos, pos);
+      // erasing has begun: retire the eraser panel until Eraser is re-selected.
+      if (!drawingStarted) setDrawingStarted(true);
       return;
     }
 
@@ -1018,11 +1093,12 @@ export default function Canvas({ ydoc, awareness }) {
         setEraserPos(null);
         awareness.setLocalStateField('draft', null);
         awareness.setLocalStateField('eraser', null);
-        setSelectedIds([]); setPendingShape(null); setConnPreset(null); setTool('select');
+        setSelectedIds([]); setDrawingStarted(false);
+        setPendingShape(null); setConnPreset(null); setTool('select');
       } else if (!ctrl) {
         const map = { v: 'select', p: 'pen', e: 'eraser', r: 'rect', t: 'text', l: 'line' };
         const k = e.key.toLowerCase();
-        if (map[k]) { setTool(map[k]); setPendingShape(null); setConnPreset(null); }
+        if (map[k]) selectTool(map[k]);
         else if (k === 'c') startConnectorTool({ routing: 'elbow' });
         else if (k === 'a') startConnectorTool({});
       }
@@ -1037,7 +1113,7 @@ export default function Canvas({ ydoc, awareness }) {
       window.removeEventListener('keyup', onKeyUp);
     };
   }, [selectedIds, editingText, deleteSelected, undoMgr, shapes,
-      copySelected, pasteClipboard, duplicateSelected, startConnectorTool]);
+      copySelected, pasteClipboard, duplicateSelected, startConnectorTool, selectTool]);
 
   const cursorStyle =
     panning ? 'grab'
@@ -1051,15 +1127,35 @@ export default function Canvas({ ydoc, awareness }) {
   const selectedConnector =
     selectedShape && isConnector(selectedShape.type) ? selectedShape : null;
 
+  // ---- single source of truth for which panel is on screen --------------
+  // Exactly one contextual panel can ever be eligible at a time, derived purely
+  // from the tool + selection + drawing state (no imperative show/hide):
+  //   • a freehand tool owns the panel area → show the Brush/Eraser panel,
+  //     unless a stroke is already underway (then nothing floats over it);
+  //   • otherwise the selection owns it → show the Property panel for whatever
+  //     is selected (one shape, or the common props of many).
+  // Because selecting a freehand tool clears the selection, and the property
+  // panel is suppressed whenever a freehand tool is active, the two can never
+  // be open together.
+  const isFreehandTool = tool === 'pen' || tool === 'eraser';
+  const showBrushPanel = isFreehandTool && !drawingStarted;
+  const propertySelection = isFreehandTool ? [] : selectedShapes;
+
+  // Stable so the memoized PropertyPanel isn't re-rendered every frame during a
+  // drag. Reorder applies to each selected shape (front/back of the whole set).
+  const reorderSelection = useCallback((dir) => {
+    for (const s of selectedShapes) reorderShape(ydoc, s.id, dir);
+  }, [selectedShapes, ydoc]);
+
   return (
     <div className="pane whiteboard-pane">
       <div className="pane-header column">
         <Toolbar
           tool={pendingShape ? 'shape' : tool}
-          setTool={(t) => { setTool(t); setPendingShape(null); setConnPreset(null); }}
+          setTool={selectTool}
           onShape={(s) => {
             if (s.type === 'connector') startConnectorTool(s.preset || {});
-            else { setPendingShape(s); setTool('shape'); }
+            else beginShapeTool(s);
           }}
           onConnector={startConnectorTool}
           onImage={handleImageUpload}
@@ -1259,6 +1355,7 @@ export default function Canvas({ ydoc, awareness }) {
           </Stage>
 
           <BrushPanel
+            visible={showBrushPanel}
             tool={tool}
             pen={penSettings}
             setPen={updatePen}
@@ -1311,11 +1408,11 @@ export default function Canvas({ ydoc, awareness }) {
         </div>
 
         <PropertyPanel
-          selected={selectedShape}
+          selection={propertySelection}
           patch={patchSelected}
           onDelete={deleteSelected}
           onDuplicate={duplicateSelected}
-          onReorder={(dir) => selectedShape && reorderShape(ydoc, selectedShape.id, dir)}
+          onReorder={reorderSelection}
         />
       </div>
 

@@ -1,16 +1,24 @@
+import { memo } from 'react';
 import { BRUSHES, PEN_PALETTE, dashArray, brushDef } from '../canvas/brushes.js';
 
 /**
- * The floating Pen / Eraser panel. Appears only while the Pen or Eraser tool is
- * active, anchored to the top-left of the canvas so it never blocks the right-
- * hand property panel. Every control writes straight into the persisted pen/
- * eraser settings, so a chosen brush stays active until the user changes it —
- * it does NOT reset each time the tool is picked. Newly drawn strokes copy these
- * values once, at creation, so editing the panel never alters existing strokes.
+ * The floating Pen / Eraser panel. Its visibility is decided upstream by the
+ * Canvas (the single source of truth) and passed in as `visible`: it appears
+ * when a freehand tool is active AND no stroke is underway, and gets out of the
+ * way the moment the user starts drawing/erasing — returning only when the tool
+ * is explicitly re-selected. Anchored top-left so it never blocks the right-hand
+ * property panel (which, by construction, is never open at the same time). Every
+ * control writes straight into the persisted pen/eraser settings, so a chosen
+ * brush stays active until changed — it does NOT reset each time the tool is
+ * picked. Newly drawn strokes copy these values once, at creation.
+ *
+ * Wrapped in React.memo so the frequent Canvas re-renders during a live stroke
+ * (which is exactly when this panel is hidden) don't cost anything here.
  */
-export default function BrushPanel({
-  tool, pen, setPen, eraser, setEraser, recentColors, onColor
+function BrushPanel({
+  visible, tool, pen, setPen, eraser, setEraser, recentColors, onColor
 }) {
+  if (!visible) return null;
   if (tool !== 'pen' && tool !== 'eraser') return null;
   const isEraser = tool === 'eraser';
 
@@ -26,6 +34,8 @@ export default function BrushPanel({
     </div>
   );
 }
+
+export default memo(BrushPanel);
 
 function BrushPreview({ pen }) {
   // A sample squiggle drawn with the current brush settings.

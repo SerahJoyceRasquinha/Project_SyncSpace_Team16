@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { isFillable, isTextType, isConnector, isImageType, HEAD_OPTIONS, ROUTING_OPTIONS } from '../canvas/shapes.jsx';
 import { BRUSHES } from '../canvas/brushes.js';
 
@@ -25,12 +26,53 @@ const styleToDash = (style) => {
 };
 
 /**
- * Contextual property panel. Shown only when something is selected. Fill/stroke/
- * opacity/border for shapes; a full formatting strip for text. Every control
- * calls patch(), which writes straight to Yjs, so a colour change is live for
- * everyone the instant it happens.
+ * Contextual property panel. Its visibility and contents are entirely driven by
+ * the `selection` array the Canvas passes in (the single source of truth), so it
+ * is a pure function of the current selection with no internal show/hide logic:
+ *
+ *   • 0 selected  → nothing renders (the panel is simply absent).
+ *   • 1 selected  → the full per-type panel for that object.
+ *   • 2+ selected → a reduced panel exposing only the properties COMMON to every
+ *                   selected object (edits fan out to all of them via patch()).
+ *
+ * Wrapped in React.memo: during a drag/resize/rotate the Canvas re-renders many
+ * times, but the selection records come from the COMMITTED shape list (stable
+ * references mid-gesture) and every callback is memoised upstream, so the panel
+ * itself does not re-render on those frames.
  */
-export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, onReorder }) {
+function PropertyPanel({ selection = [], patch, onDelete, onDuplicate, onReorder }) {
+  if (!selection.length) return null;
+  if (selection.length === 1) {
+    return (
+      <SingleProperties
+        selected={selection[0]}
+        patch={patch}
+        onDelete={onDelete}
+        onDuplicate={onDuplicate}
+        onReorder={onReorder}
+      />
+    );
+  }
+  return (
+    <MultiProperties
+      selection={selection}
+      patch={patch}
+      onDelete={onDelete}
+      onDuplicate={onDuplicate}
+      onReorder={onReorder}
+    />
+  );
+}
+
+export default memo(PropertyPanel);
+
+/**
+ * Contextual property panel for a SINGLE selected object. Fill/stroke/opacity/
+ * border for shapes; a full formatting strip for text. Every control calls
+ * patch(), which writes straight to Yjs, so a colour change is live for everyone
+ * the instant it happens.
+ */
+function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder }) {
   if (!selected) return null;
   const s = selected;
   const isText = isTextType(s.type);
@@ -387,6 +429,140 @@ export default function PropertyPanel({ selected, patch, onDelete, onDuplicate, 
       </div>
 
       <div className="prop-meta">created by {s.creator || 'anon'}</div>
+    </div>
+  );
+}
+
+// A "mixed" sentinel: when the selected objects disagree on a value, we show the
+// swatch/slider as un-highlighted rather than lying about a single shared value.
+const MIXED = Symbol('mixed');
+/** The shared value of `field` across every shape, or MIXED if they differ. */
+function shared(list, field, fallback) {
+  let seen = false;
+  let val;
+  for (const s of list) {
+    const v = s[field] ?? fallback;
+    if (!seen) { val = v; seen = true; }
+    else if (v !== val) return MIXED;
+  }
+  return val;
+}
+
+/**
+ * Contextual property panel for a MULTI-selection. It deliberately exposes ONLY
+ * the properties that make sense for every selected object at once, so an edit
+ * can be applied uniformly — patch() fans out to the whole selection (Canvas
+ * routes it through updateMany). Which sections appear is decided by what the
+ * selection has in common:
+ *   • Fill    — only if every object is fillable (no connectors / images).
+ *   • Stroke  — only if every object has a stroke (no text / images / connectors).
+ *   • Opacity — always (every object type has it).
+ *   • Arrange — reorder / duplicate / delete / lock, applied to all.
+ * A value that differs across the selection shows as "Mixed" and is left
+ * un-highlighted until the user picks one, which then unifies it.
+ */
+function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder }) {
+  const canFillAll = selection.every(
+    (s) => !isConnector(s.type) && !isImageType(s.type) &&
+           (isFillable(s.type) || isTextType(s.type))
+  );
+  const canStrokeAll = selection.every(
+    (s) => !isTextType(s.type) && !isImageType(s.type) && !isConnector(s.type)
+  );
+  const anyConn = selection.some((s) => isConnector(s.type));
+
+  const fillVal = shared(selection, 'fill');
+  const strokeVal = shared(selection, 'stroke');
+  const strokeWidthVal = shared(selection, 'strokeWidth', 2);
+  const opacityVal = shared(selection, 'opacity', 1);
+  const allLocked = selection.every((s) => s.locked);
+
+  return (
+    <div className="prop-panel">
+      <div className="prop-head">
+        <span>{selection.length} selected</span>
+        <button className="prop-del" onClick={onDelete} title="Delete all">Delete</button>
+      </div>
+
+      <div className="prop-meta multi-hint">
+        Editing {selection.length} objects — changes apply to all.
+      </div>
+
+      {canFillAll && (
+        <>
+          <label className="prop-label">Fill</label>
+          <div className="swatch-row">
+            {FILLS.map((c) => (
+              <button
+                key={c}
+                className={'mini-swatch' + (fillVal === c ? ' active' : '') + (c === 'transparent' ? ' none' : '')}
+                style={c === 'transparent' ? {} : { background: c }}
+                onClick={() => patch({ fillType: 'solid', fill: c })}
+                title={c}
+              />
+            ))}
+            <input type="color" className="color-pick"
+              value={typeof fillVal === 'string' && fillVal.startsWith('#') ? fillVal : '#6366f1'}
+              onChange={(e) => patch({ fillType: 'solid', fill: e.target.value })} />
+          </div>
+        </>
+      )}
+
+      {canStrokeAll && (
+        <>
+          <label className="prop-label">Stroke</label>
+          <div className="swatch-row">
+            {FILLS.filter((c) => c !== 'transparent').map((c) => (
+              <button key={c}
+                className={'mini-swatch' + (strokeVal === c ? ' active' : '')}
+                style={{ background: c }}
+                onClick={() => patch({ stroke: c })} />
+            ))}
+            <input type="color" className="color-pick"
+              value={typeof strokeVal === 'string' && strokeVal.startsWith('#') ? strokeVal : '#111827'}
+              onChange={(e) => patch({ stroke: e.target.value })} />
+          </div>
+
+          <label className="prop-label">Stroke width</label>
+          <input type="range" min="0" max="20"
+            value={strokeWidthVal === MIXED ? 2 : strokeWidthVal}
+            onChange={(e) => patch({ strokeWidth: Number(e.target.value) })} />
+
+          <label className="prop-label">Border</label>
+          <select className="prop-select" value="mixed"
+            onChange={(e) => {
+              const style = e.target.value;
+              if (style === 'mixed') return;
+              patch(style === 'none'
+                ? { strokeWidth: 0 }
+                : { dash: styleToDash(style), strokeWidth: strokeWidthVal === MIXED ? 2 : (strokeWidthVal || 2) });
+            }}>
+            <option value="mixed" disabled hidden>Choose…</option>
+            {BORDERS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+          </select>
+        </>
+      )}
+
+      <label className="prop-label">Opacity</label>
+      <input type="range" min="0.1" max="1" step="0.05"
+        value={opacityVal === MIXED ? 1 : opacityVal}
+        onChange={(e) => patch({ opacity: Number(e.target.value) })} />
+
+      <label className="prop-label">Arrange</label>
+      <div className="prop-btn-row">
+        {!anyConn && (
+          <>
+            <button className="fmt" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
+            <button className="fmt" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
+          </>
+        )}
+        <button className="fmt" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
+        <button className={'fmt' + (allLocked ? ' on' : '')}
+          title={allLocked ? 'Unlock all' : 'Lock all'}
+          onClick={() => patch({ locked: !allLocked })}>
+          {allLocked ? '🔒' : '🔓'}
+        </button>
+      </div>
     </div>
   );
 }
