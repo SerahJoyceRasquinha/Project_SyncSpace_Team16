@@ -464,22 +464,54 @@ input:focus { border-color: var(--accent); }
   display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--muted); margin: 12px 0 5px;
 }
+/* label with a live value readout on the right */
+.prop-label.between {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.prop-num {
+  font-size: 10px; color: var(--text); font-variant-numeric: tabular-nums;
+  text-transform: none; letter-spacing: 0; flex-shrink: 0;
+}
+.prop-num.mixed { color: var(--amber); font-style: italic; }
+
 .prop-select, .prop-input {
   width: 100%; padding: 6px 8px; font-size: 12px;
   background: #0f1117; border: 1px solid var(--line); color: var(--text); border-radius: 6px;
 }
 .prop-row { display: flex; gap: 8px; }
-.prop-col { flex: 1; }
-.prop-btn-row { display: flex; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
-.fmt {
-  width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 13px;
-  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+.prop-col { flex: 1; min-width: 0; }
+/* an indented group of controls that belong to the toggle above them */
+.prop-sub {
+  margin-top: 4px; padding-left: 10px;
+  border-left: 2px solid var(--line);
 }
+.prop-btn-row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+
+/*
+ * .fmt was `width: 28px` for EVERY button, including the ones with words on
+ * them — "Solid", "Linear", "Radial", "Straighten", "Reverse", "On"/"Off" were
+ * all crammed into a 28px square and clipped. It now sizes to its content, with
+ * two explicit variants so the intent is visible at the call site:
+ *   .fmt.icon  a square button holding one glyph (▲ ▼ ⧉ 🔒 B I U)
+ *   .fmt.grow  shares the row evenly with its siblings (label buttons)
+ * The panel's content box is only ~184px wide, so nothing here may assume more.
+ */
+.fmt {
+  min-width: 28px; height: 28px; padding: 0 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fmt.icon { width: 28px; padding: 0; font-size: 13px; flex-shrink: 0; }
+.fmt.grow { flex: 1 1 0; min-width: 0; }
+.fmt.subtle { color: var(--muted); font-size: 11px; }
+.fmt:hover:not(:disabled) { border-color: var(--accent); }
 .fmt.on { background: rgba(99,102,241,0.2); border-color: var(--accent); color: #c7d2fe; }
 .swatch-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .mini-swatch {
-  width: 20px; height: 20px; border-radius: 5px; cursor: pointer;
-  border: 2px solid transparent;
+  width: 20px; height: 20px; border-radius: 5px; cursor: pointer; padding: 0;
+  border: 2px solid transparent; flex-shrink: 0;
 }
 .mini-swatch.active { border-color: #fff; box-shadow: 0 0 0 1px var(--accent); }
 .mini-swatch.none {
@@ -487,9 +519,22 @@ input:focus { border-color: var(--accent); }
 }
 .color-pick, .prop-color {
   width: 24px; height: 24px; padding: 0; border: 1px solid var(--line);
-  border-radius: 5px; background: none; cursor: pointer;
+  border-radius: 5px; background: none; cursor: pointer; flex-shrink: 0;
 }
-.prop-panel input[type="range"] { width: 100%; accent-color: var(--accent); }
+.prop-color { width: 100%; }
+
+/*
+ * The global `input { padding: 10px 12px; border: 1px solid; background: … }`
+ * rule at the top of this file also hit every range input, wrapping each slider
+ * in a tall bordered box. Range inputs are their own control and take none of
+ * that chrome.
+ */
+.prop-panel input[type="range"],
+.brush-panel input[type="range"] {
+  width: 100%; margin: 2px 0; padding: 0;
+  background: none; border: 0; border-radius: 0;
+  accent-color: var(--accent); cursor: pointer;
+}
 .prop-meta { margin-top: 14px; font-size: 10px; color: var(--muted); font-style: italic; }
 .prop-meta.multi-hint {
   margin-top: 8px; font-style: normal; line-height: 1.5;
@@ -497,9 +542,45 @@ input:focus { border-color: var(--accent); }
   background: rgba(99, 102, 241, 0.12); color: #c7d2fe;
 }
 
-@media (max-width: 1100px) {
-  .prop-panel { width: 180px; }
+/*
+ * Keyboard focus was invisible everywhere in the app — buttons had no focus
+ * style at all, so tabbing through the panel gave no feedback. :focus-visible
+ * shows the ring for keyboard users without putting an outline on every click.
+ */
+.prop-panel button:focus-visible,
+.prop-panel select:focus-visible,
+.prop-panel input:focus-visible,
+.brush-panel button:focus-visible,
+.brush-panel input:focus-visible,
+.toolbar button:focus-visible,
+.canvas-footer button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
+
+@media (max-width: 1100px) {
+  .prop-panel { width: 186px; }
+}
+
+/* ---- transient canvas notice (upload errors etc.) ------------------- */
+.canvas-notice {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 30; max-width: min(420px, calc(100% - 24px));
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 9px; font-size: 12.5px; line-height: 1.4;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+}
+.canvas-notice.error {
+  background: #3a1d22; border: 1px solid rgba(239, 68, 68, 0.5); color: #fca5a5;
+}
+.canvas-notice.info {
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+}
+.canvas-notice-x {
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 2px; opacity: 0.7;
+}
+.canvas-notice-x:hover { opacity: 1; }
 
 /* ---- floating brush / eraser panel --------------------------------- */
 .brush-panel {
@@ -549,7 +630,6 @@ input:focus { border-color: var(--accent); }
   position: absolute; inset: 0; width: 100%; height: 100%;
   opacity: 0; cursor: pointer; padding: 0; border: 0;
 }
-.brush-panel input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .brush-toggles { display: flex; gap: 6px; margin-top: 12px; }
 .brush-toggle {
   flex: 1; padding: 6px 4px; font-size: 11px; border-radius: 7px; cursor: pointer;

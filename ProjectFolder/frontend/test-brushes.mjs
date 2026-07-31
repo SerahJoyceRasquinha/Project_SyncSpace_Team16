@@ -46,7 +46,7 @@ await build({
 const M = await import(out);
 const {
   dashArray, simplify, chaikin, calligraphyRibbon, segDist2, pointsBounds,
-  markErased, surviveRuns,
+  markErased, markErasedSweep, resample, surviveRuns,
   shapesArray, readShape, addShape, commitStroke, applyErase, removeShapes
 } = M;
 
@@ -118,6 +118,64 @@ check('pointsBounds: axis-aligned extent', (() => {
 })());
 
 // ------------------------------------------------------------- eraser split
+console.log('\neraser continuity (resampling + swept capsule)');
+{
+  // --- resample ----------------------------------------------------------
+  // A committed stroke is RDP-simplified, so its vertices can sit far apart.
+  // Erasing removes whole vertices, so that spacing IS the erase granularity —
+  // the cause of the "chunks vanish like particles" feel.
+  const sparse = [0, 0, 100, 0];
+  const dense = resample(sparse, 2);
+  check('resample densifies a long segment', dense.length / 2 > 40);
+  check('resample keeps the first point', dense[0] === 0 && dense[1] === 0);
+  check('resample keeps the last point',
+    dense[dense.length - 2] === 100 && dense[dense.length - 1] === 0);
+  let maxGap = 0;
+  for (let i = 1; i < dense.length / 2; i++) {
+    maxGap = Math.max(maxGap, Math.hypot(
+      dense[i * 2] - dense[(i - 1) * 2], dense[i * 2 + 1] - dense[(i - 1) * 2 + 1]));
+  }
+  check('no gap in a resampled stroke exceeds the spacing', maxGap <= 2.0001);
+  check('resample leaves an already-dense stroke alone',
+    resample([0, 0, 1, 0, 2, 0], 2).length === 6);
+  check('resample is a no-op on a degenerate stroke', resample([5, 5], 2).length === 2);
+  check('resample never divides by a zero-length segment',
+    resample([7, 7, 7, 7], 2).every(Number.isFinite));
+
+  // --- swept capsule vs stamped circles ----------------------------------
+  // The real requirement: a FAST drag (one big mousemove) must erase exactly
+  // what a slow drag over the same path erases. Stamping at intervals could
+  // leave scalloped gaps between stamps; the capsule is the exact swept region.
+  const line = resample([0, 0, 200, 0], 2);
+  const fast = markErasedSweep(line, 0, 0, 200, 0, 10, new Set());
+  check('one fast sweep erases the whole line it covers', fast.size === line.length / 2);
+
+  const slow = new Set();
+  for (let i = 0; i < 20; i++) {
+    markErasedSweep(line, i * 10, 0, (i + 1) * 10, 0, 10, slow);
+  }
+  check('a fast flick erases exactly what a slow drag does', slow.size === fast.size);
+
+  // perpendicular crossing: only the touched band goes, the rest survives
+  const crossed = markErasedSweep(line, 100, -50, 100, 50, 10, new Set());
+  check('a perpendicular sweep only bites where it crosses',
+    crossed.size > 0 && crossed.size < line.length / 2);
+  const runs = surviveRuns(line, crossed);
+  check('crossing the middle leaves two surviving runs', runs.length === 2);
+
+  // the hole must track the eraser's real radius, not the vertex spacing
+  const holeStart = Math.max(...[...crossed]) ;
+  const holeEnd = Math.min(...[...crossed]);
+  const holeWidth = (holeStart - holeEnd) * 2; // 2px spacing between vertices
+  check('the erased hole matches the eraser diameter (within a vertex)',
+    Math.abs(holeWidth - 20) <= 4);
+
+  check('a sweep far from the stroke marks nothing',
+    markErasedSweep(line, 0, 500, 200, 500, 10, new Set()).size === 0);
+  check('sweeping a zero-length drag still erases under the cursor',
+    markErasedSweep(line, 50, 0, 50, 0, 10, new Set()).size > 0);
+}
+
 console.log('\neraser splitting');
 
 // horizontal stroke, 11 points spaced 10 apart

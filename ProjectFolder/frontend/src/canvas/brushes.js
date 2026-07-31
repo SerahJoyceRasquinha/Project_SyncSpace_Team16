@@ -192,6 +192,41 @@ export function calligraphyRibbon(flat, width, nibAngle = 45, pressure = false) 
 }
 
 // ---------------------------------------------------------------- eraser
+/**
+ * Resample a stroke so consecutive points are at most `spacing` apart,
+ * preserving every original vertex.
+ *
+ * WHY THE ERASER NEEDED THIS. Erasing works by dropping vertices, so the
+ * SMALLEST thing it can remove is one vertex-to-vertex segment. Strokes are
+ * RDP-simplified on commit, which is exactly the operation that deletes
+ * redundant vertices — a long straight drag can end up as two points tens of
+ * pixels apart. Rubbing the eraser over that removed the whole span at once,
+ * which is the "chunks vanish like particles" feel: the erased edge never
+ * followed the cursor, it snapped between whatever vertices happened to exist.
+ *
+ * Densifying to ~2px first makes the erasable unit smaller than the eraser
+ * itself, so the hole tracks the ring's real outline and the stroke dissolves
+ * continuously. Done lazily per stroke, once per erase session.
+ */
+export function resample(flat, spacing = 2) {
+  const n = flat.length / 2;
+  if (n < 2 || !(spacing > 0)) return flat.slice();
+  const out = [flat[0], flat[1]];
+  for (let i = 1; i < n; i++) {
+    const x0 = flat[(i - 1) * 2], y0 = flat[(i - 1) * 2 + 1];
+    const x1 = flat[i * 2], y1 = flat[i * 2 + 1];
+    const d = Math.hypot(x1 - x0, y1 - y0);
+    // cap the inserted count so a wild coordinate cannot explode memory
+    const steps = Math.min(2000, Math.floor(d / spacing));
+    for (let k = 1; k < steps; k++) {
+      const t = k / steps;
+      out.push(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+    }
+    out.push(x1, y1);
+  }
+  return out;
+}
+
 /** Squared distance from point (px,py) to segment (ax,ay)-(bx,by). */
 export function segDist2(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
@@ -229,6 +264,26 @@ export function markErased(flat, ex, ey, radius, into) {
       const x1 = flat[(i + 1) * 2], y1 = flat[(i + 1) * 2 + 1];
       if (segDist2(ex, ey, x, y, x1, y1) <= r2) { into.add(i); into.add(i + 1); }
     }
+  }
+  return into;
+}
+
+/**
+ * Mark every vertex swept by an eraser of `radius` dragged from (ax,ay) to
+ * (bx,by) — i.e. everything inside the capsule the circle traces out.
+ *
+ * This replaces stamping the circle at N sampled points along the segment.
+ * Sampling was both slower (O(samples x vertices) every mousemove, and the
+ * sample count grew with drag speed) and approximate — too few samples left
+ * scalloped gaps, too many cost frames. The capsule is the EXACT swept region
+ * and costs one distance test per vertex, so fast flicks and slow careful
+ * rubs behave identically and the frame cost stops depending on pointer speed.
+ */
+export function markErasedSweep(flat, ax, ay, bx, by, radius, into) {
+  const r2 = radius * radius;
+  const n = flat.length / 2;
+  for (let i = 0; i < n; i++) {
+    if (segDist2(flat[i * 2], flat[i * 2 + 1], ax, ay, bx, by) <= r2) into.add(i);
   }
   return into;
 }

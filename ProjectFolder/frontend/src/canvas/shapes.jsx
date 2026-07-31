@@ -78,6 +78,16 @@ export function isImageType(type) {
   return type === 'image';
 }
 
+/**
+ * Only a rectangle actually honours `cornerRadius` — Konva's Rect is the one
+ * primitive that takes it. The panel used to offer the slider for circles,
+ * stars and every polygon, where dragging it changed the record and nothing
+ * else, which is exactly the "control silently does nothing" failure mode.
+ */
+export function supportsCornerRadius(type) {
+  return type === 'rect' || type === 'roundRect';
+}
+
 // ---- Stickers -----------------------------------------------------------
 /**
  * Built-in sticker presets organized by category.
@@ -173,6 +183,79 @@ export const ROUTING_OPTIONS = [
  */
 export function isCentered(type) {
   return type === 'circle' || type === 'ellipse' || type === 'star';
+}
+
+/**
+ * Where a shape's visual centre sits in its OWN local coordinate frame.
+ *
+ *   • circle / ellipse / star  — the node is already positioned at the centre,
+ *     so the local centre is the origin;
+ *   • path / line              — geometry lives in `points` against x=y=0, so
+ *     the centre is the centre of those points;
+ *   • everything else          — the node origin is the top-left corner.
+ *
+ * Scale is folded in because a scaled node's centre moves with it.
+ */
+export function shapeLocalCentre(s) {
+  const sx = Number.isFinite(s.scaleX) && s.scaleX ? s.scaleX : 1;
+  const sy = Number.isFinite(s.scaleY) && s.scaleY ? s.scaleY : 1;
+  if (isCentered(s.type)) return { x: 0, y: 0 };
+
+  const pts = Array.isArray(s.points) ? s.points : null;
+  if ((s.type === 'path' || s.type === 'line') && pts && pts.length >= 4) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      const x = Number(pts[i]), y = Number(pts[i + 1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (Number.isFinite(minX) && Number.isFinite(maxX)) {
+      return { x: ((minX + maxX) / 2) * sx, y: ((minY + maxY) / 2) * sy };
+    }
+  }
+  return { x: ((s.width || 0) / 2) * sx, y: ((s.height || 0) / 2) * sy };
+}
+
+/**
+ * The patch that rotates `s` to `nextDeg` ABOUT ITS OWN CENTRE.
+ *
+ * Konva rotates a node around its origin, which for most shapes is the top-left
+ * corner — so writing `rotation` alone made the Rotation slider swing a shape
+ * away across the canvas while the Transformer's rotate handle (which pivots
+ * about the centre) did something completely different. Same property, two
+ * behaviours. This keeps the centre pinned by compensating x/y, so the slider
+ * and the handle finally agree.
+ *
+ * Pure maths, no Konva: `centre_world = pos + R(θ)·centre_local` must hold for
+ * both angles, so `pos' = pos + R(θ₀)·c − R(θ₁)·c`.
+ */
+export function rotateAboutCentre(s, nextDeg) {
+  const next = Number(nextDeg);
+  if (!Number.isFinite(next)) return {};
+  const patch = { rotation: next };
+  const c = shapeLocalCentre(s);
+  if (!c.x && !c.y) return patch; // pivot IS the origin: nothing to compensate
+
+  const rot = (p, deg) => {
+    const a = (deg * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return { x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos };
+  };
+  const before = rot(c, Number(s.rotation) || 0);
+  const after = rot(c, next);
+  patch.x = (Number(s.x) || 0) + before.x - after.x;
+  patch.y = (Number(s.y) || 0) + before.y - after.y;
+  return patch;
+}
+
+/** Rotation folded into [0, 360) so a slider can always show it honestly. */
+export function normalizeAngle(deg) {
+  const n = Number(deg);
+  if (!Number.isFinite(n)) return 0;
+  return ((n % 360) + 360) % 360;
 }
 
 /**

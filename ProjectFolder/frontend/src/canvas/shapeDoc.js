@@ -76,12 +76,23 @@ function findMap(ydoc, id) {
   return null;
 }
 
+/**
+ * Write one patch entry. `undefined` means "remove this field" — Yjs happily
+ * STORES undefined as a value otherwise, leaving a dead key that later reads
+ * back as a real (undefined) property and defeats every `?? default` in the
+ * renderer. Deleting is what the caller actually meant.
+ */
+function applyField(map, k, v) {
+  if (v === undefined) map.delete(k);
+  else map.set(k, v);
+}
+
 /** Patch fields on one shape. Only the changed fields are written. */
 export function updateShape(ydoc, id, patch) {
   const map = findMap(ydoc, id);
   if (!map) return;
   ydoc.transact(() => {
-    for (const [k, v] of Object.entries(patch)) map.set(k, v);
+    for (const [k, v] of Object.entries(patch)) applyField(map, k, v);
     map.set('updatedAt', Date.now());
   });
 }
@@ -93,7 +104,7 @@ export function updateMany(ydoc, ids, patch) {
     for (let i = 0; i < arr.length; i++) {
       const m = arr.get(i);
       if (ids.includes(m.get('id'))) {
-        for (const [k, v] of Object.entries(patch)) m.set(k, v);
+        for (const [k, v] of Object.entries(patch)) applyField(m, k, v);
         m.set('updatedAt', Date.now());
       }
     }

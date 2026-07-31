@@ -1,3 +1,4 @@
+import * as Y from 'yjs';
 import UpdateLog from '../models/UpdateLog.js';
 
 /**
@@ -34,8 +35,56 @@ export function setPersistence(flag) {
   console.log(`[replay] update log -> ${flag ? 'MongoDB' : 'in-memory'}`);
 }
 
-/** Ceiling per room. ~200 bytes per update, so this is a few MB at worst. */
-export const MAX_LOGS_PER_ROOM = 5000;
+/*
+ * ---------------------------------------------------------------------------
+ * CAPACITY: WHY A COUNT ALONE WAS THE WRONG BUDGET
+ *
+ * The old ceiling was 5 000 entries. That sounds generous until you notice what
+ * actually fills it: dragging a shape emits a throttled 'live' position commit
+ * every 45 ms, so ~22 updates a second. Four minutes of ordinary dragging
+ * exhausted the whole history, and the room stopped recording — on exactly the
+ * long collaborative sessions replay exists for.
+ *
+ * Raising the number alone would trade one failure for another (memory). So the
+ * budget is now TWO-SIDED and the pressure is attacked from both ends:
+ *
+ *   1. COALESCING (below) collapses the drag storm at the source. Consecutive
+ *      updates from the same user inside a short window are merged into ONE
+ *      entry with Y.mergeUpdates. A 60-frame drag becomes a handful of entries
+ *      instead of sixty, so the count buys far more real session.
+ *
+ *   2. The ceiling is a byte budget AS WELL AS a count. Whichever is reached
+ *      first stops recording, so a room full of tiny updates gets its much
+ *      higher entry count, while a room full of pasted images is stopped by
+ *      size before it can eat the process.
+ *
+ * Merging is safe for replay because Y.mergeUpdates(a, b) produces an update
+ * equivalent to applying a then b. A PREFIX of the merged log is therefore
+ * still exactly the document as it stood at that point — which is the one
+ * property the whole replay design rests on.
+ * ---------------------------------------------------------------------------
+ */
+
+/** Ceiling per room, in entries. */
+export const MAX_LOGS_PER_ROOM = 50000;
+
+/** Ceiling per room, in bytes of stored payload. Whichever limit lands first wins. */
+export const MAX_LOG_BYTES_PER_ROOM = 32 * 1024 * 1024;
+
+/**
+ * Two updates from the SAME user landing within this window are merged into one
+ * entry. Long enough to swallow a drag (which emits every 45 ms), short enough
+ * that separate deliberate actions stay separate steps on the slider.
+ */
+export const COALESCE_WINDOW_MS = 400;
+
+/**
+ * A merged entry is never allowed to grow past this. Without it, one long
+ * continuous drag would coalesce into a single ever-growing blob that has to be
+ * rewritten on every frame — quadratic work, and a replay step so coarse the
+ * slider would jump across the whole gesture.
+ */
+export const MAX_COALESCED_BYTES = 16 * 1024;
 
 // roomId -> [{ seq, payload, userId, username, timestamp }]
 const memory = new Map();
@@ -49,6 +98,13 @@ const nextSeq = new Map();
 // roomId -> in-flight seeding promise, so concurrent first appends share ONE
 // seed instead of racing each other.
 const seeding = new Map();
+
+// roomId -> total stored payload bytes, for the size half of the budget.
+const bytesUsed = new Map();
+
+// roomId -> { seq, payload, userId, atMs } for the most recent entry, so a
+// coalescing append never has to read the store back.
+const lastEntry = new Map();
 
 /**
  * Make sure nextSeq has an entry for the room. Runs the (possibly async) seed
@@ -83,7 +139,8 @@ async function ensureSeeded(roomId) {
 }
 
 /**
- * Append one update to the room's history.
+ * Append one update to the room's history, merging it into the previous entry
+ * when the two belong to the same burst (see COALESCE_WINDOW_MS).
  *
  * Deliberately never throws: this is called on the hot path of every single
  * edit, immediately after the update has already been relayed to the other
@@ -97,19 +154,59 @@ export async function appendUpdate(roomId, payload, meta = {}) {
     if (!roomId || !payload || !payload.length) return null;
 
     await ensureSeeded(roomId);
-    // Atomic allocation: read + advance with NO await in between, so two
-    // rapid-fire updates can never claim the same seq (see ensureSeeded).
+    const buf = Buffer.from(payload);
+    const now = Date.now();
+
+    // ---- coalesce into the previous entry when it is part of the same burst
+    const prev = lastEntry.get(roomId);
+    const sameBurst =
+      prev &&
+      (prev.userId || null) === (meta.userId || null) &&
+      now - prev.atMs <= COALESCE_WINDOW_MS &&
+      prev.payload.length + buf.length <= MAX_COALESCED_BYTES;
+
+    if (sameBurst) {
+      const merged = mergeSafely(prev.payload, buf);
+      // If merging fails or does not actually pay for itself, fall through and
+      // append normally — correctness first, compaction second.
+      if (merged && merged.length <= MAX_COALESCED_BYTES) {
+        const delta = merged.length - prev.payload.length;
+        if (persistent) {
+          await UpdateLog.updateOne(
+            { roomId, seq: prev.seq },
+            { $set: { payload: merged, timestamp: new Date(now) } }
+          );
+        } else {
+          const list = memory.get(roomId);
+          const row = list && list[list.length - 1];
+          if (row && row.seq === prev.seq) {
+            row.payload = merged;
+            row.timestamp = new Date(now);
+          }
+        }
+        bytesUsed.set(roomId, (bytesUsed.get(roomId) || 0) + delta);
+        // The burst's start time is kept, not refreshed, so a continuous drag
+        // cannot coalesce forever into one entry.
+        lastEntry.set(roomId, { ...prev, payload: merged });
+        return { roomId, seq: prev.seq, payload: merged, coalesced: true };
+      }
+    }
+
+    // ---- otherwise append a new entry, if there is budget for it ----------
     const seq = nextSeq.get(roomId);
-    if (seq >= MAX_LOGS_PER_ROOM) return null; // capped: keep the head, drop the tail
+    const used = bytesUsed.get(roomId) || 0;
+    // capped: keep the head, drop the tail (see the note at the top of the file)
+    if (seq >= MAX_LOGS_PER_ROOM) return null;
+    if (used + buf.length > MAX_LOG_BYTES_PER_ROOM) return null;
     nextSeq.set(roomId, seq + 1);
 
     const entry = {
       roomId,
       seq,
-      payload: Buffer.from(payload),
+      payload: buf,
       userId: meta.userId || null,
       username: meta.username || null,
-      timestamp: new Date()
+      timestamp: new Date(now)
     };
 
     if (persistent) {
@@ -118,9 +215,27 @@ export async function appendUpdate(roomId, payload, meta = {}) {
       if (!memory.has(roomId)) memory.set(roomId, []);
       memory.get(roomId).push(entry);
     }
+    bytesUsed.set(roomId, used + buf.length);
+    lastEntry.set(roomId, {
+      seq, payload: buf, userId: meta.userId || null, atMs: now
+    });
     return entry;
   } catch (err) {
     console.warn('[replay] append failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Merge two Yjs updates into one equivalent update, or null if they cannot be
+ * merged. Never throws: a malformed buffer must cost us the compaction, not the
+ * append — the caller falls back to storing the update on its own.
+ */
+function mergeSafely(a, b) {
+  try {
+    return Buffer.from(Y.mergeUpdates([new Uint8Array(a), new Uint8Array(b)]));
+  } catch (err) {
+    console.warn('[replay] could not merge updates, storing separately:', err.message);
     return null;
   }
 }
@@ -155,8 +270,9 @@ export async function countLogs(roomId) {
   }
 }
 
-/** True once the room has stopped recording new history. */
+/** True once the room has stopped recording new history (either limit hit). */
 export async function isCapped(roomId) {
+  if ((bytesUsed.get(roomId) || 0) >= MAX_LOG_BYTES_PER_ROOM) return true;
   return (await countLogs(roomId)) >= MAX_LOGS_PER_ROOM;
 }
 
@@ -166,6 +282,8 @@ export async function clearLogs(roomId) {
     if (persistent) await UpdateLog.deleteMany({ roomId });
     memory.delete(roomId);
     nextSeq.delete(roomId);
+    bytesUsed.delete(roomId);
+    lastEntry.delete(roomId);
   } catch (err) {
     console.warn('[replay] clear failed:', err.message);
   }

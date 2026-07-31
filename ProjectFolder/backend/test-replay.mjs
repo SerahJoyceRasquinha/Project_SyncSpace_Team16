@@ -169,8 +169,13 @@ await wait(600);
 // 1 / 2 -------------------------------------------------- fetch the log
 const viaEvent = await getLogsViaEvent(admin.socket);
 check('get-replay-logs answers over the replay-logs stream', viaEvent !== null && !viaEvent.failed);
-check('every relayed update was logged',
-  (viaEvent?.count || 0) >= 4, `got ${viaEvent?.count}`);
+// NOTE: this deliberately does NOT assert one entry per relayed update.
+// appendUpdate() coalesces consecutive updates from the same user inside a
+// short window (Y.mergeUpdates), so the entry count is intentionally lower
+// than the update count. What has to hold is that the history is complete —
+// which is proved by reconstruction below, not by counting.
+check('the session was logged',
+  (viaEvent?.count || 0) >= 1, `got ${viaEvent?.count}`);
 
 const entries = viaEvent?.entries || [];
 
@@ -343,9 +348,16 @@ check('a long session (400+ updates) streams back without a parse error',
   bigLogs !== null && !bigLogs.failed, `fetch=${fetchMs}ms`);
 check('the long history arrives COMPLETE (no dropped entries)',
   (bigLogs?.entries || []).length === bigLogs?.count &&
-  (bigLogs?.count || 0) >= 400 &&
+  (bigLogs?.count || 0) >= 1 &&
   bigLogs.entries.every((e) => toBytes(e.payload)?.length === e.size),
   `count=${bigLogs?.count} entries=${bigLogs?.entries?.length}`);
+// Coalescing is the reason the 5 000-entry ceiling stopped being reachable in
+// minutes: ~410 updates (60 strokes + 350 live-drag patches) must compact into
+// dramatically fewer stored entries, WITHOUT losing any history — the
+// reconstruction check below is what proves nothing was actually lost.
+check('a burst of updates coalesces into far fewer entries',
+  (bigLogs?.count || 0) < 410 / 4,
+  `410 updates -> ${bigLogs?.count} entries`);
 check('long-session entries stay ordered by seq',
   (bigLogs?.entries || []).every((e, i) => i === 0 || e.seq > bigLogs.entries[i - 1].seq));
 check('the long history fetch completes promptly (well under any timeout)',

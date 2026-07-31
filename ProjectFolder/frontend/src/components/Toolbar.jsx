@@ -97,7 +97,7 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onImage, 
         </>)}
       </button>
       <button
-        className="tool-btn"
+        className={'tool-btn' + (tool === 'arrow' ? ' active' : '')}
         onClick={() => onConnector({})}
         title="Arrow (A)"
       >
@@ -160,9 +160,12 @@ export default function Toolbar({ tool, setTool, onShape, onConnector, onImage, 
           <circle cx="10" cy="9" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
           <path d="M3 15 L7 10 L10 13 L14 8 L17 12 L17 16 H3 Z" fill="currentColor" opacity="0.7" />
         </>)}
-        <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
-          onChange={handleFileChange} />
       </button>
+      {/* Deliberately a SIBLING of the button, not a child: an <input> inside a
+          <button> is invalid HTML, and it made fileRef.click() dispatch a click
+          that bubbled straight back into the button's own handler. */}
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
+        onChange={handleFileChange} />
 
       {/* -------- Stickers dropdown (categorized & attractive) -------- */}
       <div className="shapes-wrap" ref={stickerMenuRef}>

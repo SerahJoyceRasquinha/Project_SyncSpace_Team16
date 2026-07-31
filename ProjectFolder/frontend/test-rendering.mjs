@@ -51,7 +51,7 @@ const ConnectorNode = (await import('./src/canvas/ConnectorNode.jsx')).default;
 const { ShapeErrorBoundary } = await import('./src/components/ErrorBoundary.jsx');
 const { normalizeShape, normalizeShapes, cleanPoints } = await import('./src/canvas/normalize.js');
 const { connectorRoute, displayPoints } = await import('./src/canvas/connectors.js');
-const { COMMON_DEFAULTS, shapePoints } = await import('./src/canvas/shapes.jsx');
+const { COMMON_DEFAULTS, shapePoints, rotateAboutCentre, normalizeAngle, shapeLocalCentre, supportsCornerRadius } = await import('./src/canvas/shapes.jsx');
 
 // ---- tiny harness, same style as the project's other test-*.mjs ----------
 let pass = 0, fail = 0;
@@ -112,10 +112,14 @@ const makeShape = (type, extra = {}) => normalizeShape({
 // =========================================================================
 group('1. PropertyPanel mounts for every shape type (the original crash)');
 // =========================================================================
+// The panel takes a SELECTION ARRAY, not a single `selected` record. These
+// tests used to pass the long-removed `selected` prop, so the panel fell back
+// to its `selection = []` default, rendered null, and all 20 reported a failure
+// that had nothing to do with the product. They now drive the real API.
 for (const type of ALL_TYPES) {
   const r = mountAndSurvive(
     React.createElement(PropertyPanel, {
-      selected: makeShape(type),
+      selection: [makeShape(type)],
       patch: () => {}, onDelete: () => {}, onDuplicate: () => {}, onReorder: () => {}
     })
   );
@@ -124,11 +128,29 @@ for (const type of ALL_TYPES) {
     r.survived
   );
 }
+// A multi-selection renders a different component (MultiProperties) and so
+// needs its own render-phase cover; mixing types is the case most likely to
+// hit a branch that assumes a field exists.
+for (const [label, types] of [
+  ['two rects', ['rect', 'rect']],
+  ['mixed shape + text', ['rect', 'text']],
+  ['mixed shape + connector', ['rect', 'connector']],
+  ['mixed shape + image', ['rect', 'image']],
+  ['one of every type', ALL_TYPES]
+]) {
+  const r = mountAndSurvive(
+    React.createElement(PropertyPanel, {
+      selection: types.map((t, i) => makeShape(t, { id: `multi-${t}-${i}` })),
+      patch: () => {}, onDelete: () => {}, onDuplicate: () => {}, onReorder: () => {}
+    })
+  );
+  check(`multi-select of ${label} keeps the UI mounted`, r.survived);
+}
 {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
-  act(() => { root.render(React.createElement(PropertyPanel, { selected: null, patch: () => {} })); });
+  act(() => { root.render(React.createElement(PropertyPanel, { selection: [], patch: () => {} })); });
   check('no selection renders nothing (and does not throw)', host.innerHTML === '');
   act(() => root.unmount());
   host.remove();
@@ -166,6 +188,153 @@ for (const brush of ['pen', 'pencil', 'marker', 'highlighter', 'calligraphy', 'd
     })
   );
   check(`ShapeNode renders the "${brush}" brush`, !r.threw);
+}
+
+// =========================================================================
+group('2b. Fill resolution — gradients must actually win over the solid fill');
+// =========================================================================
+// The regression this pins: every case in the render switch used to spread
+// `{ fill: shape.fill }` AFTER the gradient props. Konva's fill priority
+// defaults to 'color', so the solid colour won and Linear/Radial were dead
+// controls — the panel highlighted the button and the canvas never changed.
+// "Renders without throwing" (group 2) could never catch that; this can.
+{
+  const { fillProps, shadowProps } = ShapeNodeMod;
+
+  const solid = fillProps(makeShape('rect', { fill: '#ff0000', fillType: 'solid' }));
+  check('solid fill keeps the colour and colour priority',
+    solid.fill === '#ff0000' && solid.fillPriority === 'color');
+  check('solid fill carries no leftover gradient stops',
+    solid.fillLinearGradientColorStops === undefined &&
+    solid.fillRadialGradientColorStops === undefined);
+
+  const lin = fillProps(makeShape('rect', {
+    fill: '#ff0000', fillType: 'linear',
+    fillGradientStart: '#111111', fillGradientEnd: '#222222'
+  }));
+  check('linear gradient clears the solid fill', lin.fill === undefined);
+  check('linear gradient sets linear priority', lin.fillPriority === 'linear-gradient');
+  check('linear gradient carries both stops',
+    Array.isArray(lin.fillLinearGradientColorStops) &&
+    lin.fillLinearGradientColorStops[1] === '#111111' &&
+    lin.fillLinearGradientColorStops[3] === '#222222');
+
+  const rad = fillProps(makeShape('rect', {
+    fillType: 'radial', fillGradientStart: '#111111', fillGradientEnd: '#222222'
+  }));
+  check('radial gradient clears the solid fill and sets radial priority',
+    rad.fill === undefined && rad.fillPriority === 'radial-gradient');
+  check('radial gradient has a non-zero end radius',
+    rad.fillRadialGradientEndRadius > 0);
+
+  // A half-configured gradient must fall back to the solid fill rather than
+  // rendering an invisible shape. Built raw on purpose: normalizeShape()
+  // back-fills missing stops with defaults, so a normalised record can never
+  // reach fillProps() in this state — but a legacy or hand-edited one can.
+  const halfDone = fillProps({
+    type: 'rect', width: 100, height: 100,
+    fill: '#00ff00', fillType: 'linear', fillGradientStart: '', fillGradientEnd: ''
+  });
+  check('a gradient missing its stops falls back to the solid fill',
+    halfDone.fill === '#00ff00' && halfDone.fillPriority === 'color');
+
+  // A zero-sized record (mid-drag) must not produce a degenerate gradient.
+  const zeroSized = fillProps({
+    type: 'rect', width: 0, height: 0, fill: '#00ff00',
+    fillType: 'linear', fillGradientStart: '#000', fillGradientEnd: '#fff'
+  });
+  check('a zero-sized shape falls back to the solid fill',
+    zeroSized.fill === '#00ff00' && zeroSized.fillPriority === 'color');
+
+  // Circle/Ellipse/Star are drawn around their CENTRE, so a gradient built with
+  // top-left maths (the old behaviour) landed half a shape off.
+  const rectLin = fillProps(makeShape('rect', {
+    width: 100, height: 100, fillType: 'linear',
+    fillGradientStart: '#000', fillGradientEnd: '#fff', fillGradientAngle: 0
+  }));
+  const circLin = fillProps(makeShape('circle', {
+    width: 100, height: 100, fillType: 'linear',
+    fillGradientStart: '#000', fillGradientEnd: '#fff', fillGradientAngle: 0
+  }));
+  const mid = (p) => (p.fillLinearGradientStartPoint.x + p.fillLinearGradientEndPoint.x) / 2;
+  check('a top-left shape centres its gradient at w/2', Math.abs(mid(rectLin) - 50) < 0.001);
+  check('a centred shape centres its gradient at 0 (not w/2)', Math.abs(mid(circLin)) < 0.001);
+
+  const radCirc = fillProps(makeShape('circle', {
+    width: 80, height: 80, fillType: 'radial',
+    fillGradientStart: '#000', fillGradientEnd: '#fff'
+  }));
+  check('a centred shape anchors its radial gradient at its own origin',
+    Math.abs(radCirc.fillRadialGradientStartPoint.x) < 0.001 &&
+    Math.abs(radCirc.fillRadialGradientStartPoint.y) < 0.001);
+
+  // Turning the shadow off has to actively remove it, not just stop adding it.
+  const shadowOn = shadowProps(makeShape('rect', { shadowEnabled: true, shadowBlur: 12 }), '#fff');
+  const shadowOff = shadowProps(makeShape('rect', { shadowEnabled: false }), '#fff');
+  check('shadow on sets an enabled shadow', shadowOn.shadowEnabled === true && shadowOn.shadowBlur === 12);
+  check('shadow off actively disables it', shadowOff.shadowEnabled === false && shadowOff.shadowBlur === 0);
+  const hollowShadow = shadowProps(makeShape('rect', { shadowEnabled: true }), 'transparent');
+  check('a hollow shape casts its shadow from the stroke',
+    hollowShadow.shadowForStrokeEnabled === true);
+}
+
+// =========================================================================
+group('2c. Rotation pivots about the centre, like the Transformer does');
+// =========================================================================
+// Konva rotates a node about its ORIGIN, which for most shapes is the top-left
+// corner. Writing `rotation` alone therefore swung a shape away across the
+// canvas, while the Transformer's rotate handle pivoted about the centre — the
+// same property behaving two different ways depending on which control you used.
+{
+  const centreOf = (s) => {
+    const c = shapeLocalCentre(s);
+    const a = ((s.rotation || 0) * Math.PI) / 180;
+    return {
+      x: (s.x || 0) + c.x * Math.cos(a) - c.y * Math.sin(a),
+      y: (s.y || 0) + c.x * Math.sin(a) + c.y * Math.cos(a)
+    };
+  };
+  const holdsCentre = (s, deg) => {
+    const before = centreOf(s);
+    const after = centreOf({ ...s, ...rotateAboutCentre(s, deg) });
+    return Math.abs(before.x - after.x) < 1e-9 && Math.abs(before.y - after.y) < 1e-9;
+  };
+
+  const rect = makeShape('rect', { x: 100, y: 50, width: 120, height: 80, rotation: 0 });
+  check('rotating a rect keeps its centre pinned', holdsCentre(rect, 90));
+  check('rotating a rect by an odd angle keeps its centre pinned', holdsCentre(rect, 37));
+  check('rotating a rect BACK to 0 restores the original position', (() => {
+    const spun = { ...rect, ...rotateAboutCentre(rect, 137) };
+    const back = { ...spun, ...rotateAboutCentre(spun, 0) };
+    return Math.abs(back.x - rect.x) < 1e-9 && Math.abs(back.y - rect.y) < 1e-9;
+  })());
+
+  const circle = makeShape('circle', { x: 10, y: 20, width: 60, height: 60 });
+  const cPatch = rotateAboutCentre(circle, 45);
+  check('a centred shape needs no position compensation',
+    cPatch.x === undefined && cPatch.y === undefined && cPatch.rotation === 45);
+
+  const stroke = makeShape('path', { x: 0, y: 0, points: [10, 10, 90, 10, 90, 70] });
+  check('rotating a freehand stroke pivots about its own points, not the world origin',
+    holdsCentre(stroke, 90));
+
+  check('rotateAboutCentre ignores a non-finite angle',
+    Object.keys(rotateAboutCentre(rect, NaN)).length === 0);
+
+  // The slider is 0..360, but a Transformer drag can leave rotation negative or
+  // past 360, which the slider then displayed as a clamped lie.
+  check('normalizeAngle folds a negative angle into range', normalizeAngle(-90) === 270);
+  check('normalizeAngle folds an over-turn into range', normalizeAngle(450) === 90);
+  check('normalizeAngle passes an in-range angle through', normalizeAngle(37) === 37);
+  check('normalizeAngle survives junk', normalizeAngle(undefined) === 0);
+
+  // Corner radius is only honoured by Rect; offering it elsewhere was a control
+  // that changed the record and nothing else.
+  check('corner radius is offered for rectangles',
+    supportsCornerRadius('rect') && supportsCornerRadius('roundRect'));
+  check('corner radius is not offered where Konva ignores it',
+    !supportsCornerRadius('circle') && !supportsCornerRadius('star') &&
+    !supportsCornerRadius('triangle') && !supportsCornerRadius('path'));
 }
 
 // =========================================================================

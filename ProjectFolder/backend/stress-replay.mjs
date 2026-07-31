@@ -99,8 +99,14 @@ const ordered = out.entries?.every((e, i) => i === 0 || e.seq > out.entries[i - 
 console.log(`\n  fetch=${fetchMs}ms chunks=${out.chunks} maxChunk=${(out.maxChunkBytes / 1024).toFixed(0)}KB totalPayload=${(total / 1024 / 1024).toFixed(2)}MB\n`);
 
 check('the capped session streams back without a parse error', out.ok === true);
-check('recording stopped exactly at the cap, head intact',
-  out.entries?.length === 5000 && out.meta?.capped === true,
+// This used to assert the session stopped dead at 5 000 entries. That WAS the
+// behaviour, and it was the bug: ~5 200 rapid live-drag updates — under four
+// minutes of dragging — exhausted a room's entire replay history. Consecutive
+// updates now coalesce (Y.mergeUpdates) and the ceiling is a two-sided
+// count+bytes budget, so a session this size records in full and is nowhere
+// near capping. The cap itself is proved directly in test-updatelog.mjs.
+check('a 5 000-update session records in full instead of capping out',
+  out.entries?.length > 0 && out.meta?.capped === false,
   `entries=${out.entries?.length} capped=${out.meta?.capped}`);
 check('every entry arrived complete', complete === true);
 check('entries stayed strictly seq-ordered', ordered === true);

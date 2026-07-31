@@ -1,5 +1,8 @@
 import { memo } from 'react';
-import { isFillable, isTextType, isConnector, isImageType, HEAD_OPTIONS, ROUTING_OPTIONS } from '../canvas/shapes.jsx';
+import {
+  isFillable, isTextType, isConnector, isImageType, supportsCornerRadius,
+  rotateAboutCentre, normalizeAngle, HEAD_OPTIONS, ROUTING_OPTIONS
+} from '../canvas/shapes.jsx';
 import { BRUSHES } from '../canvas/brushes.js';
 
 const FONTS = ['Inter', 'Arial', 'Calibri', 'Verdana', 'Roboto', 'Times New Roman', 'Courier New', 'Georgia', 'Trebuchet MS'];
@@ -11,12 +14,22 @@ const BORDERS = [
   { label: 'None', value: 'none' }
 ];
 
-const FILL_TYPES = ['solid', 'linear', 'radial'];
+const FILL_TYPES = [
+  { value: 'solid', label: 'Solid' },
+  { value: 'linear', label: 'Linear' },
+  { value: 'radial', label: 'Radial' }
+];
 
-const dashToStyle = (dash) => {
-  if (dash === null || dash === undefined) return 'solid';
-  if (Array.isArray(dash) && dash[0] === 2) return 'dotted';
-  if (Array.isArray(dash)) return 'dashed';
+/**
+ * Border style is derived from TWO fields, not one. `strokeWidth: 0` is what
+ * "None" actually writes, so reading only `dash` reported "Solid" for a shape
+ * with no border at all — the select showed a value the shape did not have, and
+ * re-picking "None" then looked like a dead click because nothing changed.
+ */
+const borderStyleOf = (s) => {
+  if (!s.strokeWidth) return 'none';
+  const dash = s.dash;
+  if (Array.isArray(dash) && dash.length) return dash[0] === 2 ? 'dotted' : 'dashed';
   return 'solid';
 };
 const styleToDash = (style) => {
@@ -24,6 +37,30 @@ const styleToDash = (style) => {
   if (style === 'dotted') return [2, 6];
   return null;
 };
+/** The patch a border-style choice implies. Shared by single and multi select. */
+const borderPatch = (style, currentWidth) =>
+  style === 'none'
+    ? { strokeWidth: 0 }
+    : { dash: styleToDash(style), strokeWidth: currentWidth || 2 };
+
+/** Slider + live numeric readout. Every range control in the panel uses this. */
+function Slider({ label, value, onChange, min, max, step = 1, format }) {
+  const shown = format ? format(value) : value;
+  return (
+    <>
+      <label className="prop-label between">
+        <span>{label}</span>
+        <span className="prop-num">{shown}</span>
+      </label>
+      <input
+        type="range" className="prop-range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </>
+  );
+}
 
 /**
  * Contextual property panel. Its visibility and contents are entirely driven by
@@ -71,19 +108,23 @@ export default memo(PropertyPanel);
  * border for shapes; a full formatting strip for text. Every control calls
  * patch(), which writes straight to Yjs, so a colour change is live for everyone
  * the instant it happens.
+ *
+ * A control is only rendered when the selected object can actually honour it —
+ * a slider that writes a field nothing reads is worse than a missing one,
+ * because it looks like the app ignored the user.
  */
 function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder }) {
   if (!selected) return null;
   const s = selected;
   const isText = isTextType(s.type);
   const isConn = isConnector(s.type);
-  // ROOT-CAUSE FIX: `isImage` was referenced further down (the Stroke
-  // section) but never declared, so rendering this panel for ANY non-text
-  // shape threw `ReferenceError: isImage is not defined` during React's
-  // render phase and unmounted the whole app.
   const isImage = isImageType(s.type);
   const isStroke = s.type === 'path';
   const canFill = !isConn && !isImage && (isFillable(s.type) || isText);
+  // Freehand strokes take their dash pattern from the BRUSH, so a border-style
+  // select here would write a `dash` the renderer never reads.
+  const canBorder = !isText && !isImage && !isConn && !isStroke;
+  const canGradient = canFill && !isText && !isStroke;
 
   return (
     <div className="prop-panel">
@@ -128,28 +169,27 @@ function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder })
           </div>
 
           {s.routing === 'curved' && (
-            <>
-              <label className="prop-label">Curvature</label>
-              <input type="range" min="0.1" max="1" step="0.05"
-                value={s.curvature ?? 0.5}
-                onChange={(e) => patch({ curvature: Number(e.target.value) })} />
-            </>
+            <Slider label="Curvature" min="0.1" max="1" step="0.05"
+              value={s.curvature ?? 0.5}
+              format={(v) => Number(v).toFixed(2)}
+              onChange={(v) => patch({ curvature: v })} />
           )}
           {s.routing === 'elbow' && (
-            <>
-              <label className="prop-label">Corner radius</label>
-              <input type="range" min="0" max="24"
-                value={s.cornerRadius ?? 8}
-                onChange={(e) => patch({ cornerRadius: Number(e.target.value) })} />
-            </>
+            <Slider label="Corner radius" min="0" max="24"
+              value={s.cornerRadius ?? 8}
+              format={(v) => `${v}px`}
+              onChange={(v) => patch({ cornerRadius: v })} />
           )}
 
+          <label className="prop-label">Actions</label>
           <div className="prop-btn-row">
-            <button className="fmt" title="Remove all bend points"
+            <button className="fmt grow" title="Remove all bend points"
               onClick={() => patch({ waypoints: [] })}>Straighten</button>
-            <button className="fmt" title="Swap direction (and arrowheads)"
+            <button className="fmt grow" title="Swap direction (and arrowheads)"
               onClick={() => patch({
                 start: s.end, end: s.start,
+                startHead: s.endHead ?? 'filled',
+                endHead: s.startHead ?? 'none',
                 waypoints: (() => {
                   const flat = s.waypoints || [];
                   const out = [];
@@ -193,19 +233,29 @@ function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder })
             </div>
           </div>
 
+          {/* Two rows, not one: six 28px buttons plus gaps overflow the panel's
+              content width and used to wrap with a single orphan on line two. */}
+          <label className="prop-label">Style</label>
           <div className="prop-btn-row">
-            <button className={'fmt' + (s.fontWeight === 'bold' ? ' on' : '')}
+            <button className={'fmt icon' + (s.fontWeight === 'bold' ? ' on' : '')}
+              title="Bold"
               onClick={() => patch({ fontWeight: s.fontWeight === 'bold' ? 'normal' : 'bold' })}
               style={{ fontWeight: 700 }}>B</button>
-            <button className={'fmt' + (s.italic ? ' on' : '')}
+            <button className={'fmt icon' + (s.italic ? ' on' : '')}
+              title="Italic"
               onClick={() => patch({ italic: !s.italic })}
               style={{ fontStyle: 'italic' }}>I</button>
-            <button className={'fmt' + (s.underline ? ' on' : '')}
+            <button className={'fmt icon' + (s.underline ? ' on' : '')}
+              title="Underline"
               onClick={() => patch({ underline: !s.underline })}
               style={{ textDecoration: 'underline' }}>U</button>
-            {['left', 'center', 'right'].map((a) => (
-              <button key={a} className={'fmt' + (s.align === a ? ' on' : '')}
-                onClick={() => patch({ align: a })}>{a[0].toUpperCase()}</button>
+          </div>
+          <label className="prop-label">Align</label>
+          <div className="prop-btn-row">
+            {[['left', 'Left'], ['center', 'Centre'], ['right', 'Right']].map(([a, title]) => (
+              <button key={a} className={'fmt grow' + (s.align === a ? ' on' : '')}
+                title={title}
+                onClick={() => patch({ align: a })}>{title}</button>
             ))}
           </div>
         </>
@@ -218,33 +268,41 @@ function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder })
             {FILLS.map((c) => (
               <button
                 key={c}
-                className={'mini-swatch' + (s.fill === c ? ' active' : '') + (c === 'transparent' ? ' none' : '')}
+                className={'mini-swatch' + (s.fill === c && s.fillType !== 'linear' && s.fillType !== 'radial' ? ' active' : '') + (c === 'transparent' ? ' none' : '')}
                 style={c === 'transparent' ? {} : { background: c }}
                 onClick={() => { patch({ fillType: 'solid', fill: c }); }}
-                title={c}
+                title={c === 'transparent' ? 'Transparent' : c}
               />
             ))}
-            <input type="color" className="color-pick"
+            <input type="color" className="color-pick" title="Custom fill colour"
               value={s.fill && s.fill.startsWith('#') ? s.fill : '#6366f1'}
               onChange={(e) => { patch({ fillType: 'solid', fill: e.target.value }); }} />
           </div>
 
           {/* ---- Gradient fill controls ---- */}
-          {!isText && !isStroke && (
+          {canGradient && (
             <>
               <label className="prop-label">Fill type</label>
               <div className="prop-btn-row">
                 {FILL_TYPES.map((ft) => (
-                  <button key={ft}
-                    className={'fmt' + ((s.fillType || 'solid') === ft ? ' on' : '')}
+                  <button key={ft.value}
+                    className={'fmt grow' + ((s.fillType || 'solid') === ft.value ? ' on' : '')}
+                    title={`${ft.label} fill`}
                     onClick={() => {
-                      if (ft === 'solid') {
-                        patch({ fillType: 'solid', fillGradientStart: undefined, fillGradientEnd: undefined, fillGradientAngle: undefined });
+                      if (ft.value === 'solid') {
+                        // `null`, not `undefined`: undefined is written into the
+                        // document as a real value, leaving a dead key behind.
+                        patch({ fillType: 'solid' });
                       } else {
-                        patch({ fillType: ft, fillGradientStart: s.fillGradientStart || s.fill || '#6366f1', fillGradientEnd: s.fillGradientEnd || '#a5b4fc', fillGradientAngle: s.fillGradientAngle || 0 });
+                        patch({
+                          fillType: ft.value,
+                          fillGradientStart: s.fillGradientStart || s.fill || '#6366f1',
+                          fillGradientEnd: s.fillGradientEnd || '#a5b4fc',
+                          fillGradientAngle: s.fillGradientAngle || 0
+                        });
                       }
                     }}>
-                    {ft === 'linear' ? 'Linear' : ft === 'radial' ? 'Radial' : 'Solid'}
+                    {ft.label}
                   </button>
                 ))}
               </div>
@@ -267,12 +325,10 @@ function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder })
                   </div>
 
                   {s.fillType === 'linear' && (
-                    <>
-                      <label className="prop-label">Angle</label>
-                      <input type="range" min="0" max="360"
-                        value={s.fillGradientAngle ?? 0}
-                        onChange={(e) => patch({ fillGradientAngle: Number(e.target.value) })} />
-                    </>
+                    <Slider label="Angle" min="0" max="360"
+                      value={s.fillGradientAngle ?? 0}
+                      format={(v) => `${v}°`}
+                      onChange={(v) => patch({ fillGradientAngle: v })} />
                   )}
                 </>
               )}
@@ -281,150 +337,140 @@ function SingleProperties({ selected, patch, onDelete, onDuplicate, onReorder })
         </>
       )}
 
-      {!isText && s.type !== 'image' && !isConn && (
+      {canBorder && (
         <>
           <label className="prop-label">Stroke</label>
           <div className="swatch-row">
             {FILLS.filter((c) => c !== 'transparent').map((c) => (
-              <button key={c}
+              <button key={c} title={c}
                 className={'mini-swatch' + (s.stroke === c ? ' active' : '')}
                 style={{ background: c }}
                 onClick={() => patch({ stroke: c })} />
             ))}
-            <input type="color" className="color-pick"
+            <input type="color" className="color-pick" title="Custom stroke colour"
               value={s.stroke && s.stroke.startsWith('#') ? s.stroke : '#111827'}
               onChange={(e) => patch({ stroke: e.target.value })} />
           </div>
 
-          <div className="prop-row">
-            <div className="prop-col">
-              <label className="prop-label">Stroke width</label>
-              <input type="range" min="0" max="20"
-                value={s.strokeWidth ?? 2}
-                onChange={(e) => patch({ strokeWidth: Number(e.target.value) })} />
-            </div>
-          </div>
+          <Slider label="Stroke width" min="0" max="20"
+            value={s.strokeWidth ?? 2}
+            format={(v) => `${v}px`}
+            onChange={(v) => patch({ strokeWidth: v })} />
 
           <label className="prop-label">Border</label>
-          <select className="prop-select" value={dashToStyle(s.dash)}
-            onChange={(e) => {
-              const style = e.target.value;
-              patch(style === 'none'
-                ? { strokeWidth: 0 }
-                : { dash: styleToDash(style), strokeWidth: s.strokeWidth || 2 });
-            }}>
+          <select className="prop-select" value={borderStyleOf(s)}
+            onChange={(e) => patch(borderPatch(e.target.value, s.strokeWidth))}>
             {BORDERS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
           </select>
         </>
       )}
 
-      {/* ---- Corner radius (for rect / roundRect / image) ---- */}
-      {!isConn && !isStroke && !isText && (
-        <div className="prop-row">
-          <div className="prop-col">
-            <label className="prop-label">Corner radius</label>
-            <input type="range" min="0" max="50"
-              value={s.cornerRadius ?? 0}
-              onChange={(e) => patch({ cornerRadius: Number(e.target.value) })} />
-          </div>
-        </div>
+      {/* ---- Corner radius: only Rect actually honours it ---- */}
+      {supportsCornerRadius(s.type) && (
+        <Slider label="Corner radius" min="0" max="50"
+          value={s.cornerRadius ?? 0}
+          format={(v) => `${v}px`}
+          onChange={(v) => patch({ cornerRadius: v })} />
       )}
 
-      {/* ---- Drop shadow controls ---- */}
+      {/* ---- Drop shadow ---- */}
       {!isConn && (
-        <div className="prop-row">
-          <div className="prop-col">
-            <label className="prop-label">Drop shadow</label>
-            <div className="prop-btn-row">
-              <button className={'fmt' + (s.shadowEnabled ? ' on' : '')}
-                onClick={() => patch({
-                  shadowEnabled: !s.shadowEnabled,
-                  ...(!s.shadowEnabled ? {
-                    shadowColor: s.shadowColor || '#000000',
-                    shadowBlur: s.shadowBlur || 10,
-                    shadowOffsetX: s.shadowOffsetX || 4,
-                    shadowOffsetY: s.shadowOffsetY || 4,
-                    shadowOpacity: s.shadowOpacity || 0.3
-                  } : {})
-                })}>
-                {s.shadowEnabled ? '✓ On' : 'Off'}
-              </button>
-            </div>
-            {s.shadowEnabled && (
-              <>
-                <div className="prop-row">
-                  <div className="prop-col">
-                    <label className="prop-label">Color</label>
-                    <input type="color" className="prop-color"
-                      value={s.shadowColor || '#000000'}
-                      onChange={(e) => patch({ shadowColor: e.target.value })} />
-                  </div>
-                  <div className="prop-col">
-                    <label className="prop-label">Blur</label>
-                    <input type="range" min="0" max="40"
-                      value={s.shadowBlur ?? 10}
-                      onChange={(e) => patch({ shadowBlur: Number(e.target.value) })} />
-                  </div>
-                </div>
-                <div className="prop-row">
-                  <div className="prop-col">
-                    <label className="prop-label">Offset X</label>
-                    <input type="range" min="-20" max="20"
-                      value={s.shadowOffsetX ?? 4}
-                      onChange={(e) => patch({ shadowOffsetX: Number(e.target.value) })} />
-                  </div>
-                  <div className="prop-col">
-                    <label className="prop-label">Offset Y</label>
-                    <input type="range" min="-20" max="20"
-                      value={s.shadowOffsetY ?? 4}
-                      onChange={(e) => patch({ shadowOffsetY: Number(e.target.value) })} />
-                  </div>
-                </div>
-                <label className="prop-label">Opacity</label>
-                <input type="range" min="0" max="1" step="0.05"
-                  value={s.shadowOpacity ?? 0.3}
-                  onChange={(e) => patch({ shadowOpacity: Number(e.target.value) })} />
-              </>
-            )}
+        <>
+          <label className="prop-label">Drop shadow</label>
+          <div className="prop-btn-row">
+            <button className={'fmt grow' + (s.shadowEnabled ? ' on' : '')}
+              title={s.shadowEnabled ? 'Turn the drop shadow off' : 'Turn the drop shadow on'}
+              onClick={() => patch({
+                shadowEnabled: !s.shadowEnabled,
+                ...(!s.shadowEnabled ? {
+                  shadowColor: s.shadowColor || '#000000',
+                  shadowBlur: s.shadowBlur || 10,
+                  shadowOffsetX: s.shadowOffsetX || 4,
+                  shadowOffsetY: s.shadowOffsetY || 4,
+                  shadowOpacity: s.shadowOpacity || 0.3
+                } : {})
+              })}>
+              {s.shadowEnabled ? 'On' : 'Off'}
+            </button>
           </div>
-        </div>
+          {s.shadowEnabled && (
+            <div className="prop-sub">
+              <div className="prop-row">
+                <div className="prop-col">
+                  <label className="prop-label">Colour</label>
+                  <input type="color" className="prop-color"
+                    value={s.shadowColor || '#000000'}
+                    onChange={(e) => patch({ shadowColor: e.target.value })} />
+                </div>
+              </div>
+              <Slider label="Shadow blur" min="0" max="40"
+                value={s.shadowBlur ?? 10}
+                format={(v) => `${v}px`}
+                onChange={(v) => patch({ shadowBlur: v })} />
+              <Slider label="Offset X" min="-20" max="20"
+                value={s.shadowOffsetX ?? 4}
+                format={(v) => `${v}px`}
+                onChange={(v) => patch({ shadowOffsetX: v })} />
+              <Slider label="Offset Y" min="-20" max="20"
+                value={s.shadowOffsetY ?? 4}
+                format={(v) => `${v}px`}
+                onChange={(v) => patch({ shadowOffsetY: v })} />
+              <Slider label="Shadow opacity" min="0" max="1" step="0.05"
+                value={s.shadowOpacity ?? 0.3}
+                format={(v) => `${Math.round(v * 100)}%`}
+                onChange={(v) => patch({ shadowOpacity: v })} />
+            </div>
+          )}
+        </>
       )}
 
       {/* ---- Blur filter ---- */}
       {!isConn && (
-        <div className="prop-row">
-          <div className="prop-col">
-            <label className="prop-label">Blur</label>
-            <input type="range" min="0" max="20"
-              value={s.blurRadius ?? 0}
-              onChange={(e) => patch({ blurRadius: Number(e.target.value) })} />
-          </div>
-        </div>
+        <Slider label="Blur" min="0" max="20"
+          value={s.blurRadius ?? 0}
+          format={(v) => (v ? `${v}px` : 'None')}
+          onChange={(v) => patch({ blurRadius: v })} />
       )}
 
-      <label className="prop-label">Opacity</label>
-      <input type="range" min="0.1" max="1" step="0.05"
+      <Slider label="Opacity" min="0" max="1" step="0.05"
         value={s.opacity ?? 1}
-        onChange={(e) => patch({ opacity: Number(e.target.value) })} />
+        format={(v) => `${Math.round(v * 100)}%`}
+        onChange={(v) => patch({ opacity: v })} />
 
       {!isConn && (
-        <>
-          <label className="prop-label">Rotation</label>
-          <input type="range" min="0" max="360"
-            value={Math.round(s.rotation || 0)}
-            onChange={(e) => patch({ rotation: Number(e.target.value) })} />
-        </>
+        <Slider label="Rotation" min="0" max="360"
+          value={Math.round(normalizeAngle(s.rotation))}
+          format={(v) => `${v}°`}
+          // Pivots about the shape's centre, so this agrees with the
+          // Transformer's rotate handle instead of swinging the shape away.
+          onChange={(v) => patch(rotateAboutCentre(s, v))} />
       )}
 
       <label className="prop-label">Arrange</label>
       <div className="prop-btn-row">
-        <button className="fmt" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
-        <button className="fmt" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
-        <button className="fmt" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
-        <button className={'fmt' + (s.locked ? ' on' : '')}
-          title={s.locked ? 'Unlock' : 'Lock (prevents moving/selecting)'}
+        <button className="fmt icon" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
+        <button className="fmt icon" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
+        <button className="fmt icon" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
+        <button className={'fmt icon' + (s.locked ? ' on' : '')}
+          title={s.locked ? 'Unlock' : 'Lock (prevents moving and resizing)'}
           onClick={() => patch({ locked: !s.locked })}>
           {s.locked ? '🔒' : '🔓'}
+        </button>
+      </div>
+
+      {/* ---- Reset: put every appearance effect back to its default ---- */}
+      <div className="prop-btn-row">
+        <button className="fmt grow subtle" title="Reset effects, opacity and rotation to their defaults"
+          onClick={() => patch({
+            fillType: 'solid',
+            fillGradientAngle: 0,
+            shadowEnabled: false,
+            blurRadius: 0,
+            opacity: 1,
+            ...(supportsCornerRadius(s.type) ? { cornerRadius: 0 } : {}),
+            ...(isConn ? {} : rotateAboutCentre(s, 0))
+          })}>
+          Reset appearance
         </button>
       </div>
 
@@ -447,6 +493,17 @@ function shared(list, field, fallback) {
   }
   return val;
 }
+/** Same idea, but for a value that is DERIVED from a record rather than read. */
+function sharedBy(list, fn) {
+  let seen = false;
+  let val;
+  for (const s of list) {
+    const v = fn(s);
+    if (!seen) { val = v; seen = true; }
+    else if (v !== val) return MIXED;
+  }
+  return val;
+}
 
 /**
  * Contextual property panel for a MULTI-selection. It deliberately exposes ONLY
@@ -455,10 +512,10 @@ function shared(list, field, fallback) {
  * routes it through updateMany). Which sections appear is decided by what the
  * selection has in common:
  *   • Fill    — only if every object is fillable (no connectors / images).
- *   • Stroke  — only if every object has a stroke (no text / images / connectors).
+ *   • Stroke  — only if every object has a stroke (no text / images / strokes).
  *   • Opacity — always (every object type has it).
  *   • Arrange — reorder / duplicate / delete / lock, applied to all.
- * A value that differs across the selection shows as "Mixed" and is left
+ * A value that differs across the selection is reported as "Mixed" and left
  * un-highlighted until the user picks one, which then unifies it.
  */
 function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder }) {
@@ -467,7 +524,8 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
            (isFillable(s.type) || isTextType(s.type))
   );
   const canStrokeAll = selection.every(
-    (s) => !isTextType(s.type) && !isImageType(s.type) && !isConnector(s.type)
+    (s) => !isTextType(s.type) && !isImageType(s.type) &&
+           !isConnector(s.type) && s.type !== 'path'
   );
   const anyConn = selection.some((s) => isConnector(s.type));
 
@@ -475,7 +533,11 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
   const strokeVal = shared(selection, 'stroke');
   const strokeWidthVal = shared(selection, 'strokeWidth', 2);
   const opacityVal = shared(selection, 'opacity', 1);
+  // Derived from strokeWidth AND dash, exactly like the single-select panel.
+  const borderVal = sharedBy(selection, borderStyleOf);
   const allLocked = selection.every((s) => s.locked);
+
+  const mixedTag = <span className="prop-num mixed">Mixed</span>;
 
   return (
     <div className="prop-panel">
@@ -490,7 +552,10 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
 
       {canFillAll && (
         <>
-          <label className="prop-label">Fill</label>
+          <label className="prop-label between">
+            <span>Fill</span>
+            {fillVal === MIXED ? mixedTag : null}
+          </label>
           <div className="swatch-row">
             {FILLS.map((c) => (
               <button
@@ -498,10 +563,10 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
                 className={'mini-swatch' + (fillVal === c ? ' active' : '') + (c === 'transparent' ? ' none' : '')}
                 style={c === 'transparent' ? {} : { background: c }}
                 onClick={() => patch({ fillType: 'solid', fill: c })}
-                title={c}
+                title={c === 'transparent' ? 'Transparent' : c}
               />
             ))}
-            <input type="color" className="color-pick"
+            <input type="color" className="color-pick" title="Custom fill colour"
               value={typeof fillVal === 'string' && fillVal.startsWith('#') ? fillVal : '#6366f1'}
               onChange={(e) => patch({ fillType: 'solid', fill: e.target.value })} />
           </div>
@@ -510,54 +575,61 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
 
       {canStrokeAll && (
         <>
-          <label className="prop-label">Stroke</label>
+          <label className="prop-label between">
+            <span>Stroke</span>
+            {strokeVal === MIXED ? mixedTag : null}
+          </label>
           <div className="swatch-row">
             {FILLS.filter((c) => c !== 'transparent').map((c) => (
-              <button key={c}
+              <button key={c} title={c}
                 className={'mini-swatch' + (strokeVal === c ? ' active' : '')}
                 style={{ background: c }}
                 onClick={() => patch({ stroke: c })} />
             ))}
-            <input type="color" className="color-pick"
+            <input type="color" className="color-pick" title="Custom stroke colour"
               value={typeof strokeVal === 'string' && strokeVal.startsWith('#') ? strokeVal : '#111827'}
               onChange={(e) => patch({ stroke: e.target.value })} />
           </div>
 
-          <label className="prop-label">Stroke width</label>
-          <input type="range" min="0" max="20"
+          <Slider label="Stroke width" min="0" max="20"
             value={strokeWidthVal === MIXED ? 2 : strokeWidthVal}
-            onChange={(e) => patch({ strokeWidth: Number(e.target.value) })} />
+            format={(v) => (strokeWidthVal === MIXED ? 'Mixed' : `${v}px`)}
+            onChange={(v) => patch({ strokeWidth: v })} />
 
-          <label className="prop-label">Border</label>
-          <select className="prop-select" value="mixed"
+          <label className="prop-label between">
+            <span>Border</span>
+            {borderVal === MIXED ? mixedTag : null}
+          </label>
+          {/* Was hardcoded to value="mixed", so it could never reflect the
+              selection even when every object agreed. */}
+          <select className="prop-select"
+            value={borderVal === MIXED ? '__mixed' : borderVal}
             onChange={(e) => {
               const style = e.target.value;
-              if (style === 'mixed') return;
-              patch(style === 'none'
-                ? { strokeWidth: 0 }
-                : { dash: styleToDash(style), strokeWidth: strokeWidthVal === MIXED ? 2 : (strokeWidthVal || 2) });
+              if (style === '__mixed') return;
+              patch(borderPatch(style, strokeWidthVal === MIXED ? 2 : strokeWidthVal));
             }}>
-            <option value="mixed" disabled hidden>Choose…</option>
+            {borderVal === MIXED && <option value="__mixed" disabled>Mixed</option>}
             {BORDERS.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
           </select>
         </>
       )}
 
-      <label className="prop-label">Opacity</label>
-      <input type="range" min="0.1" max="1" step="0.05"
+      <Slider label="Opacity" min="0" max="1" step="0.05"
         value={opacityVal === MIXED ? 1 : opacityVal}
-        onChange={(e) => patch({ opacity: Number(e.target.value) })} />
+        format={(v) => (opacityVal === MIXED ? 'Mixed' : `${Math.round(v * 100)}%`)}
+        onChange={(v) => patch({ opacity: v })} />
 
       <label className="prop-label">Arrange</label>
       <div className="prop-btn-row">
         {!anyConn && (
           <>
-            <button className="fmt" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
-            <button className="fmt" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
+            <button className="fmt icon" title="Bring forward" onClick={() => onReorder?.('forward')}>▲</button>
+            <button className="fmt icon" title="Send backward" onClick={() => onReorder?.('backward')}>▼</button>
           </>
         )}
-        <button className="fmt" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
-        <button className={'fmt' + (allLocked ? ' on' : '')}
+        <button className="fmt icon" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>⧉</button>
+        <button className={'fmt icon' + (allLocked ? ' on' : '')}
           title={allLocked ? 'Unlock all' : 'Lock all'}
           onClick={() => patch({ locked: !allLocked })}>
           {allLocked ? '🔒' : '🔓'}

@@ -10,7 +10,7 @@ import { ShapeErrorBoundary } from './ErrorBoundary.jsx';
 import { normalizeShapes } from '../canvas/normalize.js';
 import {
   shapesArray, readShape, addShape, updateShape, updateShapeLive, updateMany,
-  removeShapes, clearAll, bringToFront, duplicateShapes, reorderShape,
+  removeShapes, clearAll, duplicateShapes, reorderShape,
   commitStroke, applyErase
 } from '../canvas/shapeDoc.js';
 import {
@@ -18,7 +18,7 @@ import {
 } from '../canvas/shapes.jsx';
 import {
   DEFAULT_PEN_SETTINGS, DEFAULT_ERASER_SETTINGS,
-  markErased, surviveRuns, pointsBounds, simplify
+  markErasedSweep, resample, surviveRuns, pointsBounds, simplify
 } from '../canvas/brushes.js';
 import {
   connectorRoute, displayPoints, findSnapTarget, anchorPoints, insertWaypoint
@@ -75,7 +75,6 @@ export default function Canvas({ ydoc, awareness }) {
   // canvas the panel gets out of the way and only comes back when the tool is
   // explicitly (re)selected. It is a LOCAL interface flag — never synced.
   const [drawingStarted, setDrawingStarted] = useState(false);
-  const [pendingSticker, setPendingSticker] = useState(null); // { svg, name } pending placement
   const [preview, setPreview] = useState(null); // live drag-to-create ghost
   const [editingText, setEditingText] = useState(null); // { id?, x, y, value, ... }
   const [size, setSize] = useState({ width: 800, height: 600 });
@@ -84,6 +83,10 @@ export default function Canvas({ ydoc, awareness }) {
   const [snapHint, setSnapHint] = useState(null); // { shapeId, anchor, x, y } while wiring
   const [livePos, setLivePos] = useState(() => new Map()); // id -> {x,y} mid-drag
   const [connOverride, setConnOverride] = useState(null); // { id, patch } mid handle-drag
+  // A transient message shown over the stage (bad upload, file too large...).
+  // Canvas has no access to the app-level toast hook, and the code that needed
+  // one previously just called an undefined `toast()` and threw.
+  const [notice, setNotice] = useState(null); // { kind: 'error'|'info', text }
 
   // ---- pen / eraser state (persisted preferences, live previews) --------
   const [penSettings, setPenSettings] = useState(() => loadJSON('ss.pen', DEFAULT_PEN_SETTINGS));
@@ -284,6 +287,13 @@ export default function Canvas({ ydoc, awareness }) {
     if (tool !== 'eraser') setEraserPos(null);
   }, [tool]);
 
+  // auto-dismiss the transient notice
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   // ---- keep the selection referentially honest --------------------------
   // The selection is the single source of truth the property panel reads from,
   // so it must never point at a shape that has left the document. A shape can
@@ -410,49 +420,73 @@ export default function Canvas({ ydoc, awareness }) {
       : { x: point.x, y: point.y };
 
   // ---------------------------------------------------------------- image / sticker
+  /**
+   * Place a bitmap on the canvas at its NATURAL aspect ratio, scaled to fit a
+   * sensible default box. It used to hardcode 160x120, so every upload was
+   * squashed or stretched the moment it landed and the user had to fix it by
+   * hand — a portrait photo arrived as a letterbox.
+   */
+  const placeImage = useCallback((src, extra = {}) => {
+    const MAX = 320; // longest edge of a freshly placed image, in world units
+    const finish = (natW, natH) => {
+      const w = natW > 0 ? natW : MAX;
+      const h = natH > 0 ? natH : MAX;
+      const scale = Math.min(1, MAX / Math.max(w, h));
+      const width = Math.max(MIN_SIZE, Math.round(w * scale));
+      const height = Math.max(MIN_SIZE, Math.round(h * scale));
+      // centre it in the current viewport
+      const cx = (-view.x / view.scale) + (size.width / view.scale) / 2 - width / 2;
+      const cy = (-view.y / view.scale) + (size.height / view.scale) / 2 - height / 2;
+      const id = addShape(ydoc, me, {
+        type: 'image',
+        src,
+        x: cx, y: cy,
+        width, height,
+        stroke: 'transparent',
+        strokeWidth: 0,
+        ...extra
+      });
+      setSelectedIds([id]);
+      setTool('select');
+    };
+
+    // Measure first. An SVG with no intrinsic size reports 0, which `finish`
+    // falls back on rather than dividing by it.
+    const probe = new window.Image();
+    probe.onload = () => finish(probe.naturalWidth, probe.naturalHeight);
+    probe.onerror = () => finish(0, 0);
+    probe.src = src;
+  }, [ydoc, me, view, size]);
+
   /** Upload an image file, convert to base64, and place it on the canvas. */
   const handleImageUpload = useCallback((file) => {
     if (!file) return;
+    if (!/^image\//.test(file.type || '')) {
+      setNotice({ kind: 'error', text: 'That file is not an image.' });
+      return;
+    }
     const reader = new FileReader();
+    reader.onerror = () =>
+      setNotice({ kind: 'error', text: 'That image could not be read.' });
     reader.onload = (e) => {
       const dataUrl = e.target.result;
       // Max 5 MB for shared images so the Yjs doc doesn't bloat
-      if (dataUrl.length > 5 * 1024 * 1024) {
-        toast?.('Image is too large. Max 5 MB recommended.', 'error');
+      if (typeof dataUrl !== 'string' || dataUrl.length > 5 * 1024 * 1024) {
+        // `toast` was never defined in this scope, so this branch threw a
+        // ReferenceError instead of telling the user anything.
+        setNotice({ kind: 'error', text: 'That image is too large — 5 MB is the limit.' });
         return;
       }
-      // Place in the centre-ish of the current viewport
-      const cx = (-view.x / view.scale) + (size.width / view.scale) / 2 - 80;
-      const cy = (-view.y / view.scale) + (size.height / view.scale) / 2 - 60;
-      const id = addShape(ydoc, me, {
-        type: 'image',
-        src: dataUrl,
-        x: cx, y: cy,
-        width: 160, height: 120,
-        stroke: 'transparent',
-        strokeWidth: 0
-      });
-      setSelectedIds([id]);
+      placeImage(dataUrl);
     };
     reader.readAsDataURL(file);
-  }, [ydoc, me, view, size]);
+  }, [placeImage]);
 
   /** Place a sticker (SVG data URL) on the canvas. */
   const handleSticker = useCallback((sticker) => {
     if (!sticker?.svg) return;
-    const cx = (-view.x / view.scale) + (size.width / view.scale) / 2 - 50;
-    const cy = (-view.y / view.scale) + (size.height / view.scale) / 2 - 50;
-    const id = addShape(ydoc, me, {
-      type: 'image',
-      src: sticker.svg,
-      name: sticker.name,
-      x: cx, y: cy,
-      width: 100, height: 100,
-      stroke: 'transparent',
-      strokeWidth: 0
-    });
-    setSelectedIds([id]);
-  }, [ydoc, me, view, size]);
+    placeImage(sticker.svg, { name: sticker.name });
+  }, [placeImage]);
 
   // ---------------------------------------------------------------- pen / eraser
   /** Turn the persisted pen settings into a stroke-record template. */
@@ -477,34 +511,60 @@ export default function Canvas({ ydoc, awareness }) {
   }, [shapes]);
 
   /**
-   * Stamp the eraser along the segment from -> to (sampled so a fast drag leaves
-   * no gaps), marking erased vertices per stroke in the live session mask. The
-   * document is NOT written here — this is a local preview; the split is
+   * Erase everything the eraser sweeps between `from` and `to`.
+   *
+   * Three things make this feel continuous rather than granular:
+   *
+   *  1. Each stroke is DENSIFIED once per session (resample ~2px) before it is
+   *     touched. Erasing removes whole vertices, so on an RDP-simplified stroke
+   *     the smallest removable piece could be tens of pixels — that granularity
+   *     was the "particles disappearing" effect.
+   *  2. The eraser is tested as a swept CAPSULE over the whole drag segment
+   *     instead of stamping circles at sampled intervals. It is exact (no gaps
+   *     on a fast flick) and costs one test per vertex regardless of speed.
+   *  3. The surviving runs are computed HERE and cached on the session, so the
+   *     render pass just draws them instead of re-splitting every stroke on
+   *     every frame.
+   *
+   * The document is NOT written here — this is a local preview; the split is
    * committed atomically on pointer-up (see commitErase).
    */
   const eraseAlong = useCallback((from, to) => {
     const sess = eraseRef.current;
     if (!sess) return;
     const r = eraserSettings.size;
-    const dist = Math.hypot(to.x - from.x, to.y - from.y);
-    const steps = Math.max(1, Math.ceil(dist / (r * 0.6)));
     const padMinX = Math.min(from.x, to.x) - r, padMaxX = Math.max(from.x, to.x) + r;
     const padMinY = Math.min(from.y, to.y) - r, padMaxY = Math.max(from.y, to.y) + r;
     let changed = false;
+
     for (const s of shapes) {
       if (s.type !== 'path' || s.locked || !s.points?.length) continue;
+      // Broad phase against the COMMITTED bounds: a far-away stroke is never
+      // densified at all, which is what keeps this cheap with thousands on canvas.
       const b = pathBounds.get(s.id);
       if (b && (b.maxX < padMinX || b.minX > padMaxX || b.maxY < padMinY || b.minY > padMaxY)) continue;
+
+      let dense = sess.dense.get(s.id);
+      if (!dense) {
+        // Finer than the eraser, but never so fine that a long stroke explodes
+        // into hundreds of thousands of points.
+        const spacing = Math.max(1, Math.min(2.5, r / 6));
+        dense = resample(s.points, spacing);
+        sess.dense.set(s.id, dense);
+      }
+
       let set = sess.mask.get(s.id);
       const before = set ? set.size : 0;
-      if (!set) set = new Set();
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        markErased(s.points, from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, r, set);
+      if (!set) { set = new Set(); sess.mask.set(s.id, set); }
+      markErasedSweep(dense, from.x, from.y, to.x, to.y, r, set);
+      if (set.size > before) {
+        sess.runs.set(s.id, surviveRuns(dense, set));
+        changed = true;
       }
-      if (set.size > before) { sess.mask.set(s.id, set); changed = true; }
     }
-    if (changed) setEraseMask(new Map(sess.mask));
+    // A fresh Map identity is what tells React to repaint the preview; the runs
+    // inside are already computed, so the render pass itself stays cheap.
+    if (changed) setEraseMask(new Map(sess.runs));
   }, [eraserSettings, shapes, pathBounds]);
 
   /** Commit the whole eraser drag as one undo step (delete originals, add runs). */
@@ -513,12 +573,15 @@ export default function Canvas({ ydoc, awareness }) {
     eraseRef.current = null;
     setEraseMask(null);
     awareness.setLocalStateField('eraser', null);
-    if (!sess || !sess.mask.size) return;
+    if (!sess || !sess.runs.size) return;
     const edits = [];
-    for (const [id, set] of sess.mask) {
-      const s = shapes.find((x) => x.id === id);
-      if (!s?.points) continue;
-      edits.push({ id, runs: surviveRuns(s.points, set) });
+    for (const [id, runs] of sess.runs) {
+      if (!shapes.some((x) => x.id === id)) continue;
+      // Re-simplify each surviving fragment before it is stored. The runs come
+      // from the densified copy, so committing them raw would persist (and
+      // sync, and hold in undo history) an order of magnitude more points than
+      // the stroke had before it was erased.
+      edits.push({ id, runs: runs.map((run) => (run.length >= 6 ? simplify(run, 0.5) : run)) });
     }
     if (edits.length) applyErase(ydoc, me, edits);
   }, [shapes, ydoc, me, awareness]);
@@ -596,7 +659,9 @@ export default function Canvas({ ydoc, awareness }) {
 
     // ERASER tool: begin a partial-erase drag (preview only until pointer-up).
     if (tool === 'eraser') {
-      eraseRef.current = { mask: new Map(), last: { ...pos } };
+      // mask = erased vertex indices, dense = densified copy of each touched
+      // stroke, runs = the surviving fragments (computed once, drawn many times)
+      eraseRef.current = { mask: new Map(), dense: new Map(), runs: new Map(), last: { ...pos } };
       drawing.current = { kind: 'erase' };
       setEraserPos(pos);
       awareness.setLocalStateField('eraser', { x: pos.x, y: pos.y, size: eraserSettings.size });
@@ -818,7 +883,12 @@ export default function Canvas({ ydoc, awareness }) {
         ? cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]
         : [id]
     );
-    bringToFront(ydoc, id);
+    // NOTE: selecting deliberately does NOT bring the shape to the front.
+    // It used to, which quietly destroyed any layer order the user had set up:
+    // press "Send backward", click the shape again to keep working on it, and
+    // it jumped straight back to the top — making the Arrange buttons look
+    // broken when they had worked perfectly. Z-order is now only ever changed
+    // by the explicit Arrange controls (reorderShape), which are undoable.
   };
 
   // ---------------------------------------------------------------- drag
@@ -1151,7 +1221,14 @@ export default function Canvas({ ydoc, awareness }) {
     <div className="pane whiteboard-pane">
       <div className="pane-header column">
         <Toolbar
-          tool={pendingShape ? 'shape' : tool}
+          tool={
+            pendingShape ? 'shape'
+              // The toolbar has two buttons for the one connector tool. Tell it
+              // which variant is armed, otherwise Arrow could never highlight.
+              : tool === 'connector'
+                ? (connPreset?.routing === 'elbow' ? 'connector' : 'arrow')
+                : tool
+          }
           setTool={selectTool}
           onShape={(s) => {
             if (s.type === 'connector') startConnectorTool(s.preset || {});
@@ -1205,7 +1282,7 @@ export default function Canvas({ ydoc, awareness }) {
                 // live erase preview: a masked stroke renders as its surviving
                 // runs so the user watches it break apart before releasing
                 if (eraseMask && s.type === 'path' && eraseMask.has(s.id)) {
-                  const runs = surviveRuns(s.points || [], eraseMask.get(s.id));
+                  const runs = eraseMask.get(s.id) || [];
                   return (
                     <Group key={s.id} listening={false}>
                       {runs.map((r, i) => (
@@ -1353,6 +1430,14 @@ export default function Canvas({ ydoc, awareness }) {
               ))}
             </Layer>
           </Stage>
+
+          {notice && (
+            <div className={'canvas-notice ' + notice.kind} role="status">
+              {notice.text}
+              <button className="canvas-notice-x" onClick={() => setNotice(null)}
+                title="Dismiss">×</button>
+            </div>
+          )}
 
           <BrushPanel
             visible={showBrushPanel}

@@ -1,67 +1,155 @@
-import { forwardRef, memo, useEffect, useRef, useState } from 'react';
+import {
+  forwardRef, memo, useCallback, useEffect, useLayoutEffect, useRef, useState
+} from 'react';
 import { Line, Rect, Circle, Ellipse, Star, Path, Text, Image } from 'react-konva';
 import Konva from 'konva';
-import { shapePoints, heartPath, cloudPath } from './shapes.jsx';
+import { shapePoints, heartPath, cloudPath, isCentered } from './shapes.jsx';
 import { brushDef, dashArray, renderPoints, calligraphyRibbon } from './brushes.js';
 
+/** A gradient is only live when the mode is set AND both stops are real. */
+export function hasGradient(s) {
+  return (s.fillType === 'linear' || s.fillType === 'radial') &&
+    !!s.fillGradientStart && !!s.fillGradientEnd;
+}
+
 /**
- * Apply effects (gradient fill, drop shadow, blur filter) to a Konva node config.
- * Every shape node gets these applied via spread into its props.
+ * Apply effects (gradient fill, drop shadow) to a Konva node config.
+ *
+ * ROOT-CAUSE FIX (gradients never rendered). This used to `delete props.fill`
+ * and hope the gradient took over, but every call site then spread `{...filled}`
+ * — i.e. `fill: shape.fill` — AFTER the effects, putting the solid colour back.
+ * Konva's fill priority defaults to 'color', so the solid colour won every time
+ * and Linear/Radial were dead controls: the button highlighted, nothing changed.
+ *
+ * Now this function owns the ENTIRE paint (fill + gradient + shadow) and every
+ * call site spreads it last, so there is exactly one place that decides how a
+ * shape is filled. `fillPriority` is also set explicitly rather than relying on
+ * Konva's fallback ordering.
+ *
+ * The gradient geometry is expressed in the node's OWN local space, which is not
+ * the same for every shape: Circle / Ellipse / Star are drawn around their
+ * centre (local origin 0,0 with the box spanning ±w/2, ±h/2), everything else
+ * from its top-left. Using top-left maths for a centred node — the previous
+ * behaviour — pushed the gradient half a shape down and to the right.
  */
 function withEffects(shape, baseProps) {
-  const props = { ...baseProps };
-  const s = shape;
+  return { ...baseProps, ...fillProps(shape), ...shadowProps(shape, shape.fill) };
+}
 
-  // ---- blur filter (Konva Blur filter) --------------------------------
-  if (s.blurRadius && s.blurRadius > 0) {
-    props.filters = [...(props.filters || []), Konva.Filters.Blur];
-    props.blurRadius = s.blurRadius;
+/** The fill half of withEffects: solid colour or gradient, never both.
+ *  Exported so the headless suite can assert the paint decision directly. */
+export function fillProps(s) {
+  const props = {};
+
+  // ---- fill: gradient if one is configured, otherwise the solid colour ---
+  const w = s.width || 0;
+  const h = s.height || 0;
+  const centered = isCentered(s.type);
+  // top-left corner of the shape box, in the node's local coordinates
+  const x0 = centered ? -w / 2 : 0;
+  const y0 = centered ? -h / 2 : 0;
+  const cx = x0 + w / 2;
+  const cy = y0 + h / 2;
+
+  if (hasGradient(s) && (w > 0 || h > 0)) {
+    if (s.fillType === 'linear') {
+      const angleRad = ((s.fillGradientAngle || 0) * Math.PI) / 180;
+      const len = Math.sqrt(w * w + h * h) / 2 || 1;
+      const dx = Math.cos(angleRad) * len;
+      const dy = Math.sin(angleRad) * len;
+      props.fillLinearGradientStartPoint = { x: cx - dx, y: cy - dy };
+      props.fillLinearGradientEndPoint = { x: cx + dx, y: cy + dy };
+      props.fillLinearGradientColorStops = [0, s.fillGradientStart, 1, s.fillGradientEnd];
+      props.fillPriority = 'linear-gradient';
+    } else {
+      props.fillRadialGradientStartPoint = { x: cx, y: cy };
+      props.fillRadialGradientEndPoint = { x: cx, y: cy };
+      props.fillRadialGradientStartRadius = 0;
+      props.fillRadialGradientEndRadius = Math.max(w, h) / 2 || 1;
+      props.fillRadialGradientColorStops = [0, s.fillGradientStart, 1, s.fillGradientEnd];
+      props.fillPriority = 'radial-gradient';
+    }
+    // Konva reads `fill` first unless fillPriority says otherwise; clearing it
+    // keeps the two from fighting and lets react-konva unset it on the node.
+    props.fill = undefined;
+  } else {
+    props.fill = s.fill;
+    props.fillPriority = 'color';
+    // Leaving stale gradient attrs on a node that has switched back to Solid
+    // would make Konva keep painting the gradient. Explicitly undefine them so
+    // react-konva clears the old values instead of only ever adding new ones.
+    props.fillLinearGradientColorStops = undefined;
+    props.fillRadialGradientColorStops = undefined;
   }
 
-  // ---- drop shadow (Konva shadow properties) --------------------------
+  return props;
+}
+
+/**
+ * The drop-shadow half. Split out so a freehand stroke can take the shadow
+ * WITHOUT taking a fill — a stroke is an open polyline and has no interior.
+ */
+export function shadowProps(s, resolvedFill) {
+  const props = {};
   if (s.shadowEnabled) {
+    props.shadowEnabled = true;
     props.shadowColor = s.shadowColor || '#000000';
     props.shadowBlur = s.shadowBlur ?? 10;
     props.shadowOffsetX = s.shadowOffsetX ?? 4;
     props.shadowOffsetY = s.shadowOffsetY ?? 4;
     props.shadowOpacity = s.shadowOpacity ?? 0.3;
-    // If shadow is enabled but no fill is set, give a minimal fill so the
-    // shadow has something to cast on
-    if (!props.fill || props.fill === 'transparent') {
+    // An unfilled outline has nothing to cast a shadow from, so let the STROKE
+    // cast it instead — otherwise enabling the shadow on a hollow shape looks
+    // like the control did nothing.
+    if (!resolvedFill || resolvedFill === 'transparent') {
       props.shadowForStrokeEnabled = true;
     }
-  }
-
-  // ---- gradient fill (linear or radial) --------------------------------
-  // We use Konva's fillLinearGradientStartPoint / fillLinearGradientEndPoint
-  // and similar props for radial. These must be set on shapes that support
-  // fillGradient (Rect, Circle, Ellipse, etc. — anything with a fill).
-  if (s.fillType === 'linear' && s.fillGradientStart && s.fillGradientEnd) {
-    const w = s.width || 200;
-    const h = s.height || 200;
-    const angleRad = ((s.fillGradientAngle || 0) * Math.PI) / 180;
-    const cx = w / 2;
-    const cy = h / 2;
-    const len = Math.sqrt(w * w + h * h) / 2;
-    const dx = Math.cos(angleRad) * len;
-    const dy = Math.sin(angleRad) * len;
-    props.fillLinearGradientStartPoint = { x: cx - dx, y: cy - dy };
-    props.fillLinearGradientEndPoint = { x: cx + dx, y: cy + dy };
-    props.fillLinearGradientColorStops = [0, s.fillGradientStart, 1, s.fillGradientEnd];
-    // Remove the solid fill so gradient takes over
-    delete props.fill;
-  } else if (s.fillType === 'radial' && s.fillGradientStart && s.fillGradientEnd) {
-    const w = s.width || 200;
-    const h = s.height || 200;
-    props.fillRadialGradientStartPoint = { x: w / 2, y: h / 2 };
-    props.fillRadialGradientEndPoint = { x: w / 2, y: h / 2 };
-    props.fillRadialGradientStartRadius = 0;
-    props.fillRadialGradientEndRadius = Math.max(w, h) / 2;
-    props.fillRadialGradientColorStops = [0, s.fillGradientStart, 1, s.fillGradientEnd];
-    delete props.fill;
+  } else {
+    // switching the shadow back off has to actually remove it
+    props.shadowEnabled = false;
+    props.shadowBlur = 0;
+    props.shadowOffsetX = 0;
+    props.shadowOffsetY = 0;
   }
 
   return props;
+}
+
+/**
+ * Konva filters do NOTHING until the node is cached — a filter is a pixel
+ * operation over the node's own bitmap, and without cache() there is no bitmap.
+ * The Blur slider therefore used to be a completely dead control: it wrote
+ * `filters: [Konva.Filters.Blur]` into the props and no pixel ever changed.
+ *
+ * This hook is the missing half: cache the node (padded, so the blur is not
+ * clipped by its own bounding box) whenever a blur is set, and clear the cache
+ * the moment it returns to 0 so an un-blurred shape goes straight back to
+ * rendering live (a cached node otherwise stays a frozen bitmap).
+ */
+function useBlurFilter(nodeRef, shape) {
+  const blur = shape.blurRadius > 0 ? shape.blurRadius : 0;
+  useLayoutEffect(() => {
+    const node = nodeRef.current;
+    // In the headless suite react-konva is stubbed and never populates a ref.
+    if (!node || typeof node.cache !== 'function') return;
+    try {
+      if (blur > 0) {
+        node.filters([Konva.Filters.Blur]);
+        node.blurRadius(blur);
+        // pad the cache so the blur has room to bleed instead of being cut off
+        node.cache({ offset: Math.ceil(blur) + 8 });
+      } else {
+        node.filters([]);
+        if (node.isCached()) node.clearCache();
+      }
+      node.getLayer()?.batchDraw();
+    } catch (err) {
+      console.error('[SyncSpace] could not apply the blur filter to', shape.id, err);
+    }
+    // `shape` is in the dep list on purpose: the cached bitmap is baked at the
+    // node's current size/colour, so ANY change to the record must re-cache or
+    // the blurred copy goes stale (a resized shape would keep its old picture).
+  }, [nodeRef, blur, shape]);
 }
 
 /**
@@ -77,8 +165,11 @@ function renderStroke(shape, common) {
   const width = shape.strokeWidth || 3;
   const opacity = shape.opacity ?? def.opacity ?? 1;
   const pts = shape.points || [];
-  const perf = { perfectDrawEnabled: false, shadowForStrokeEnabled: false, listening: common.listening !== false };
-  const eff = withEffects(shape, {});
+  const perf = { perfectDrawEnabled: false, listening: common.listening !== false };
+  // Only the shadow: an open polyline has no interior, so pulling a fill in
+  // here would do nothing on a normal stroke and silently repaint a
+  // calligraphy ribbon in the wrong colour.
+  const eff = shadowProps(shape, null);
 
   // Calligraphy is a filled variable-width ribbon, not a constant-width line.
   // A degenerate (single-point) stroke falls through to the round-cap Line
@@ -135,13 +226,23 @@ const ShapeNode = forwardRef(function ShapeNode(
 ) {
   const {
     type, x, y, rotation, scaleX, scaleY, opacity,
-    fill, stroke, strokeWidth, dash, width, height,
+    stroke, strokeWidth, dash, width, height,
     cornerRadius: cr
   } = shape;
 
+  // The Canvas needs this ref (to attach the Transformer) and so does the blur
+  // filter (to cache the node). One callback feeds both.
+  const localRef = useRef(null);
+  const setRef = useCallback((node) => {
+    localRef.current = node;
+    if (typeof ref === 'function') ref(node);
+    else if (ref) ref.current = node;
+  }, [ref]);
+  useBlurFilter(localRef, shape);
+
   // Props shared by every node.
   const common = {
-    ref,
+    ref: setRef,
     id: shape.id,
     x, y,
     rotation: rotation || 0,
@@ -161,9 +262,12 @@ const ShapeNode = forwardRef(function ShapeNode(
   };
 
   const stroked = { stroke, strokeWidth };
-  const filled = { fill };
   const w = width || 0;
   const h = height || 0;
+  // The complete paint for this record — transform + fill/gradient + shadow.
+  // Computed ONCE and always spread LAST, so nothing downstream can put a solid
+  // colour back over a gradient (which is exactly the bug this replaced).
+  const paint = withEffects(shape, common);
 
   switch (type) {
     // ---- freehand (Milestone 0 legacy + new pen strokes) --------------
@@ -175,14 +279,14 @@ const ShapeNode = forwardRef(function ShapeNode(
     case 'rect': {
       // Apply cornerRadius if set (> 0) — new feature: rounded corners slider
       const effectiveCR = (cr && cr > 0) ? cr : undefined;
-      return <Rect {...withEffects(shape, common)} width={w} height={h}
-        cornerRadius={effectiveCR} {...filled} {...stroked} />;
+      return <Rect {...paint} width={w} height={h}
+        cornerRadius={effectiveCR} {...stroked} />;
     }
     case 'roundRect': {
       // Use custom cornerRadius if set, otherwise fall back to the old 20% formula
       const effectiveCR = (cr && cr > 0) ? cr : Math.min(w, h) * 0.2;
-      return <Rect {...withEffects(shape, common)} width={w} height={h}
-        cornerRadius={effectiveCR} {...filled} {...stroked} />;
+      return <Rect {...paint} width={w} height={h}
+        cornerRadius={effectiveCR} {...stroked} />;
     }
 
     // ---- ellipse family ----------------------------------------------
@@ -199,11 +303,10 @@ const ShapeNode = forwardRef(function ShapeNode(
       const r = Math.min(w, h) / 2;
       return (
         <Circle
-          {...withEffects(shape, common)}
+          {...paint}
           x={x + w / 2}
           y={y + h / 2}
           radius={r}
-          {...filled}
           {...stroked}
         />
       );
@@ -211,12 +314,11 @@ const ShapeNode = forwardRef(function ShapeNode(
     case 'ellipse':
       return (
         <Ellipse
-          {...withEffects(shape, common)}
+          {...paint}
           x={x + w / 2}
           y={y + h / 2}
           radiusX={w / 2}
           radiusY={h / 2}
-          {...filled}
           {...stroked}
         />
       );
@@ -224,28 +326,30 @@ const ShapeNode = forwardRef(function ShapeNode(
     case 'star':
       return (
         <Star
-          {...withEffects(shape, common)}
+          {...paint}
           x={x + w / 2}
           y={y + h / 2}
           numPoints={5}
           innerRadius={Math.min(w, h) / 4}
           outerRadius={Math.min(w, h) / 2}
-          {...filled}
           {...stroked}
         />
       );
 
     // ---- smooth paths -------------------------------------------------
     case 'heart':
-      return <Path {...withEffects(shape, common)} data={heartPath(w, h)} {...filled} {...stroked} />;
+      return <Path {...paint} data={heartPath(w, h)} {...stroked} />;
     case 'cloud':
-      return <Path {...withEffects(shape, common)} data={cloudPath(w, h)} {...filled} {...stroked} />;
+      return <Path {...paint} data={cloudPath(w, h)} {...stroked} />;
 
     // ---- lines --------------------------------------------------------
+    // A line is an OPEN polyline: it has no interior, so it takes the shadow
+    // but never a fill (a stray fill would paint the area under the line).
     case 'line':
       return (
         <Line
-          {...withEffects(shape, common)}
+          {...common}
+          {...shadowProps(shape, null)}
           points={shape.points || [0, 0, w, h]}
           stroke={stroke}
           strokeWidth={strokeWidth}
@@ -261,10 +365,13 @@ const ShapeNode = forwardRef(function ShapeNode(
       return <ImageNode shape={shape} common={common} />;
 
     // ---- text ---------------------------------------------------------
+    // Text takes the shadow but paints from its own solid colour (the panel
+    // deliberately offers no gradient for text).
     case 'text':
       return (
         <Text
-          {...withEffects(shape, common)}
+          {...common}
+          {...shadowProps(shape, shape.fill)}
           text={shape.text || ''}
           fontSize={shape.fontSize || 20}
           fontFamily={shape.fontFamily || 'Inter'}
@@ -279,18 +386,13 @@ const ShapeNode = forwardRef(function ShapeNode(
         />
       );
 
-    // ---- images (user-uploaded or stickers) ---------------------------
-    case 'image':
-      return <ImageNode shape={shape} common={common} />;
-
     // ---- everything else is a closed polygon outline ------------------
     default:
       return (
         <Line
-          {...withEffects(shape, common)}
+          {...paint}
           points={shapePoints(type, w, h)}
           closed
-          {...filled}
           {...stroked}
         />
       );
@@ -347,8 +449,10 @@ function ImageNode({ shape, common }) {
     };
   }, [shape.src]);
 
-  // Apply effects (shadow, blur) to the image too
-  const effCommon = withEffects(shape, common);
+  // Shadow only — deliberately NOT the fill. Konva's Image paints a solid rect
+  // whenever it has a fill, so handing it the record's `fill` (which every
+  // shape carries a default for) would cover the picture with a flat colour.
+  const effCommon = { ...common, ...shadowProps(shape, null) };
 
   // Compute image rendering props with optional crop
   const imgProps = {
