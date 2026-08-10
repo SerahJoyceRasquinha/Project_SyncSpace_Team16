@@ -8,6 +8,7 @@ import {
   isUsernameTaken,
   findMember
 } from './workspaceStore.js';
+import { addMembership } from './userStore.js';
 import { generateWorkspaceId, newId } from '../utils/ids.js';
 import { signAccessToken, signLobbyTicket } from '../utils/token.js';
 import * as rt from './realtime.js';
@@ -24,7 +25,7 @@ const fail = (status, message) => ({ ok: false, status, message });
 
 // ---------------------------------------------------------------- create
 
-export async function createNewWorkspace({ name, password, username, permissionMode }) {
+export async function createNewWorkspace({ name, password, username, permissionMode, accountUserId }) {
   // Retry on the (astronomically unlikely) ID collision rather than crash.
   let workspaceId;
   for (let i = 0; i < 5; i++) {
@@ -34,7 +35,9 @@ export async function createNewWorkspace({ name, password, username, permissionM
   }
   if (!workspaceId) return fail(500, 'Could not allocate a workspace ID. Please try again.');
 
-  const adminId = newId();
+  // When the creator is signed into an account, the admin member is that
+  // account (its userId is reused), so the dashboard can find the workspace.
+  const adminId = accountUserId || newId();
   const passwordHash = await bcrypt.hash(password, 10);
 
   const workspace = await createWorkspace({
@@ -49,6 +52,11 @@ export async function createNewWorkspace({ name, password, username, permissionM
     pendingRequests: []
   });
 
+  // Index the membership on the account so the dashboard lists it.
+  if (accountUserId) {
+    await addMembership(accountUserId, workspaceId, 'admin');
+  }
+
   const token = signAccessToken({
     workspaceId,
     userId: adminId,
@@ -61,7 +69,7 @@ export async function createNewWorkspace({ name, password, username, permissionM
 
 // ------------------------------------------------------------------ join
 
-export async function requestJoin({ workspaceId, username, password }) {
+export async function requestJoin({ workspaceId, username, password, accountUserId }) {
   const workspace = await findWorkspace(workspaceId);
 
   // Deliberately identical message for "no such workspace" and "wrong password":
@@ -74,17 +82,26 @@ export async function requestJoin({ workspaceId, username, password }) {
   const passwordOk = await bcrypt.compare(password, workspace.passwordHash);
   if (!passwordOk) return fail(401, 'Workspace not found, or the secret code is incorrect.');
 
+  // A signed-in user who is already a member simply re-enters — the join
+  // endpoint becomes a re-entry shortcut instead of a "username taken" wall.
+  if (accountUserId && findMember(workspace, accountUserId)) {
+    return enterWorkspace({ workspaceId, accountUserId });
+  }
+
   if (isUsernameTaken(workspace, username)) {
     return fail(409, `The name "${username}" is already taken in this workspace. Please pick another.`);
   }
 
   // ---- Mode 2: password is enough. Straight in.
   if (workspace.permissionMode === 'password') {
-    const userId = newId();
+    // Reuse the account id when signed in so the membership links to it.
+    const userId = accountUserId || newId();
     const { workspace: saved } = await updateWorkspace(workspaceId, (ws) => {
       ws.members.push({ userId, username, role: 'member', joinedAt: new Date() });
     });
     if (!saved) return fail(404, 'Workspace not found.');
+
+    if (accountUserId) await addMembership(accountUserId, workspaceId, 'member');
 
     const token = signAccessToken({ workspaceId, userId, username, role: 'member' });
     rt.toAdmin(workspaceId, 'workspace:updated', { workspace: publicView(saved) });
@@ -97,6 +114,8 @@ export async function requestJoin({ workspaceId, username, password }) {
   const request = {
     requestId,
     username,
+    // Carry the account id through so approval can reuse it.
+    ...(accountUserId ? { userId: accountUserId } : {}),
     requestedAt: new Date(),
     status: 'pending'
   };
@@ -114,10 +133,36 @@ export async function requestJoin({ workspaceId, username, password }) {
   return { ok: true, status: 'pending', requestId, ticket };
 }
 
+/**
+ * Re-enter a workspace as an existing member (dashboard "Open" button, or a
+ * signed-in user joining a workspace they already belong to). Requires a USER
+ * token; the server re-checks membership and hands back a fresh ACCESS token.
+ */
+export async function enterWorkspace({ workspaceId, accountUserId }) {
+  if (!accountUserId) return fail(401, 'You are not signed in to an account.');
+
+  const workspace = await findWorkspace(workspaceId);
+  if (!workspace) return fail(404, 'Workspace not found, or the secret code is incorrect.');
+  if (workspace.status === 'closed') {
+    return fail(410, 'This workspace has been closed by its administrator.');
+  }
+
+  const member = findMember(workspace, accountUserId);
+  if (!member) return fail(403, 'You are not a member of this workspace.');
+
+  const token = signAccessToken({
+    workspaceId,
+    userId: member.userId,
+    username: member.username,
+    role: member.role
+  });
+
+  return { ok: true, status: 'approved', token, workspace: publicView(workspace) };
+}
+
 // --------------------------------------------------------------- approve
 
 export async function approveRequest({ workspaceId, requestId }) {
-  const userId = newId();
   let approved = null;
 
   const { workspace: saved, result } = await updateWorkspace(workspaceId, (ws) => {
@@ -130,19 +175,27 @@ export async function approveRequest({ workspaceId, requestId }) {
       return { error: `The name "${req.username}" was taken while they waited.` };
     }
 
+    // If the requester was signed into an account, the membership is that
+    // account — so the dashboard can list the workspace for them.
+    const userId = req.userId || newId();
     req.status = 'approved';
     req.resolvedAt = new Date();
     ws.members.push({ userId, username: req.username, role: 'member', joinedAt: new Date() });
-    approved = { requestId, username: req.username };
+    approved = { requestId, username: req.username, userId };
     return { ok: true };
   });
 
   if (!saved) return fail(404, 'Workspace not found.');
   if (result?.error) return fail(409, result.error);
 
+  // Index the approved member on their account, if they have one.
+  if (approved.userId) {
+    await addMembership(approved.userId, workspaceId, 'member');
+  }
+
   const token = signAccessToken({
     workspaceId,
-    userId,
+    userId: approved.userId,
     username: approved.username,
     role: 'member'
   });

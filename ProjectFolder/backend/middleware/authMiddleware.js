@@ -46,3 +46,48 @@ export function requireAdmin(req, res, next) {
   }
   next();
 }
+
+/**
+ * Requires a valid USER token (the account layer — kind: 'user'). This is a
+ * separate identity from workspace membership: it proves who you are, not which
+ * rooms you may enter.
+ */
+export function requireUser(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ error: 'You are not signed in.' });
+  }
+
+  const payload = verifyToken(token);
+  if (!payload || payload.kind !== 'user') {
+    return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+  }
+
+  req.user = {
+    userId: payload.userId,
+    email: payload.email,
+    username: payload.username
+  };
+  next();
+}
+
+/**
+ * Like requireMember, but optional: attaches req.accountId (the linked user
+ * account, if any) when a user token is present, and never rejects a request
+ * that lacks one. Used by workspace create/join so account holders can attach
+ * their memberships without breaking the anonymous flow.
+ */
+export function optionalUser(req, _res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (token) {
+    const payload = verifyToken(token);
+    if (payload && payload.kind === 'user') {
+      req.accountId = payload.userId;
+      req.accountEmail = payload.email;
+      req.accountUsername = payload.username;
+    }
+  }
+  next();
+}

@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router";
+import { useAuth } from "../hooks/useAuth";
 
 /**
  * Landing page — a modern marketing-style splash that introduces SyncSpace
@@ -7,6 +8,7 @@ import { useNavigate } from "react-router";
  */
 export default function Landing() {
   const navigate = useNavigate();
+  const { account, ready, logout } = useAuth();
 
   return (
     <div className="landing">
@@ -22,9 +24,28 @@ export default function Landing() {
             <a href="#how">How it works</a>
             <a href="#collab">Collaboration</a>
           </nav>
-          <button className="landing-cta-sm" onClick={() => navigate("/join")}>
-            Join Workspace
-          </button>
+          {ready && account ? (
+            <div className="landing-account">
+              <button className="landing-account-name" onClick={() => navigate("/dashboard")}>
+                {account.username}
+              </button>
+              <button className="landing-cta-sm" onClick={() => navigate("/dashboard")}>
+                My Workspaces
+              </button>
+              <button className="landing-cta-sm ghost" onClick={logout}>
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="landing-account">
+              <button className="landing-cta-sm ghost" onClick={() => navigate("/login")}>
+                Sign in
+              </button>
+              <button className="landing-cta-sm" onClick={() => navigate("/join")}>
+                Join Workspace
+              </button>
+            </div>
+          )}
         </div>
       </header>
 

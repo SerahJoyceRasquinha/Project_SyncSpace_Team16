@@ -35,7 +35,9 @@ export async function create(req, res, next) {
       name: name.name,
       password: password.password,
       username: username.username,
-      permissionMode: mode.permissionMode
+      permissionMode: mode.permissionMode,
+      // Set when a valid user token accompanied the request (optionalUser).
+      accountUserId: req.accountId
     });
     return send(res, result, 201);
   } catch (err) {
@@ -54,6 +56,24 @@ export async function peek(req, res, next) {
     // NOTE: permissionMode is intentionally NOT revealed here. You learn it by
     // authenticating, not by guessing IDs.
     return res.json({ ok: true, workspace: teaserView(ws) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/workspaces/:workspaceId/enter — dashboard one-click re-entry.
+// Requires a USER token; the server re-checks membership and returns a fresh
+// workspace ACCESS token (or a clean 403 if you are no longer a member).
+export async function enter(req, res, next) {
+  try {
+    const id = validateWorkspaceId(req.params.workspaceId);
+    if (!id.ok) return res.status(400).json({ error: id.message });
+
+    const result = await svc.enterWorkspace({
+      workspaceId: id.workspaceId,
+      accountUserId: req.user.userId
+    });
+    return send(res, result);
   } catch (err) {
     next(err);
   }
@@ -78,7 +98,8 @@ export async function join(req, res, next) {
     const result = await svc.requestJoin({
       workspaceId: id.workspaceId,
       username: username.username,
-      password: password.password
+      password: password.password,
+      accountUserId: req.accountId
     });
 
     if (result.ok) clearRateLimit(limitKey);

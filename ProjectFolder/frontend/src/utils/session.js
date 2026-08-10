@@ -8,6 +8,7 @@
 
 const key = (workspaceId) => `syncspace:${workspaceId}`;
 const TICKET = "syncspace:ticket";
+const ACCOUNT = "syncspace:account";
 
 export function saveSession(workspaceId, { token, username, role }) {
   sessionStorage.setItem(key(workspaceId), JSON.stringify({ token, username, role }));
@@ -43,4 +44,26 @@ export function loadTicket() {
 
 export function clearTicket() {
   sessionStorage.removeItem(TICKET);
+}
+
+// --- user account (persists across tabs; powers the dashboard) ---------
+// Unlike workspace access tokens, the account token is shared across tabs so
+// signing in once is enough everywhere. It only identifies WHO you are — it
+// grants no workspace access by itself (that is still per-workspace).
+
+export function saveAccount(user) {
+  localStorage.setItem(ACCOUNT, JSON.stringify(user));
+}
+
+export function loadAccount() {
+  try {
+    const raw = localStorage.getItem(ACCOUNT);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearAccount() {
+  localStorage.removeItem(ACCOUNT);
 }

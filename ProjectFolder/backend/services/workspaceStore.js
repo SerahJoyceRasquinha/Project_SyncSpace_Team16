@@ -48,6 +48,27 @@ export async function workspaceExists(workspaceId) {
 }
 
 /**
+ * Every workspace a user account belongs to, enriched with the member record.
+ * Used by the dashboard. Works in both persistence modes.
+ */
+export async function findWorkspacesByUser(userId) {
+  if (!userId) return [];
+  if (persistent) {
+    const docs = await Workspace.find({ 'members.userId': userId }).lean();
+    return docs.map((ws) => ({
+      workspace: publicView(ws),
+      member: findMember(ws, userId)
+    }));
+  }
+  const out = [];
+  for (const ws of memory.values()) {
+    const member = findMember(ws, userId);
+    if (member) out.push({ workspace: publicView(ws), member });
+  }
+  return out;
+}
+
+/**
  * Apply a mutation function to a workspace and persist the result.
  * `mutate(ws)` receives a plain object, mutates it, and may return a value
  * which is handed back to the caller. This gives us one single write path,

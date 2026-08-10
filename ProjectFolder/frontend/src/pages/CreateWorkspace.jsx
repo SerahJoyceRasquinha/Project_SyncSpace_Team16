@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { api } from '../utils/api';
 import { saveSession } from '../utils/session';
+import { loadAccount } from '../utils/session';
 
 export default function CreateWorkspace() {
   const [form, setForm] = useState({
@@ -14,13 +15,16 @@ export default function CreateWorkspace() {
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
+  // Optional account token attaches the new workspace to the user's dashboard.
+  const userToken = loadAccount()?.token || undefined;
+
   const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
   const submit = async () => {
     setError('');
     setBusy(true);
     try {
-      const { workspace, token } = await api.createWorkspace(form);
+      const { workspace, token } = await api.createWorkspace(form, userToken);
       // The creator IS the administrator — straight into the workspace, no join step.
       saveSession(workspace.workspaceId, {
         token,
@@ -70,7 +74,7 @@ export default function CreateWorkspace() {
         <input
           value={form.username}
           onChange={set('username')}
-          placeholder="Serah"
+          placeholder="xyz"
           maxLength={24}
         />
 
