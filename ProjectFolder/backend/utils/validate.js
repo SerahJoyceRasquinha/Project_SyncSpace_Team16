@@ -42,6 +42,24 @@ export function validatePassword(raw) {
   return { ok: true, password };
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+export function validateEmail(raw) {
+  const email = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!EMAIL_RE.test(email) || email.length > 160) {
+    return { ok: false, message: 'Please enter a valid email address.' };
+  }
+  return { ok: true, email };
+}
+
+export function validateAccountPassword(raw) {
+  const password = typeof raw === 'string' ? raw : '';
+  if (password.length < 6 || password.length > 128) {
+    return { ok: false, message: 'Password must be between 6 and 128 characters.' };
+  }
+  return { ok: true, password };
+}
+
 export function validateMode(raw) {
   if (raw !== 'permission' && raw !== 'password') {
     return { ok: false, message: 'Access policy must be "permission" or "password".' };

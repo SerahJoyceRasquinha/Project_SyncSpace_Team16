@@ -2,12 +2,16 @@ import { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { api } from '../utils/api';
 import { saveSession, saveTicket } from '../utils/session';
+import { loadAccount } from '../utils/session';
 
 export default function JoinWorkspace() {
   const [form, setForm] = useState({ workspaceId: '', password: '', username: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+
+  // Optional account token links the membership to the user's dashboard.
+  const userToken = loadAccount()?.token || undefined;
 
   const set = (field) => (e) => setForm({ ...form, [field]: e.target.value });
 
@@ -20,7 +24,7 @@ export default function JoinWorkspace() {
       const res = await api.joinWorkspace(workspaceId, {
         username: form.username.trim(),
         password: form.password
-      });
+      }, userToken);
 
       if (res.status === 'approved') {
         // Password mode: the code was enough. Straight in.
@@ -79,7 +83,7 @@ export default function JoinWorkspace() {
         <input
           value={form.username}
           onChange={set('username')}
-          placeholder="Thanushree"
+          placeholder="xyz"
           maxLength={24}
           onKeyDown={(e) => e.key === 'Enter' && !busy && submit()}
         />

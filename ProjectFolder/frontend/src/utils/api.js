@@ -54,12 +54,30 @@ async function request(path, { method = "GET", body, token, timeoutMs = 20000, s
 }
 
 export const api = {
-  createWorkspace: (body) => request("/workspaces", { method: "POST", body }),
+  // ---- user accounts (optional; powers the dashboard) ------------------
+  signup: (body) => request("/auth/signup", { method: "POST", body }),
+  login: (body) => request("/auth/login", { method: "POST", body }),
+  me: (token) => request("/auth/me", { token }),
 
-  joinWorkspace: (workspaceId, body) =>
-    request(`/workspaces/${workspaceId}/join`, { method: "POST", body }),
+  /** One-click re-entry into a workspace the account already belongs to. */
+  enterWorkspace: (workspaceId, token) =>
+    request(`/workspaces/${workspaceId}/enter`, { method: "POST", token }),
 
-  me: (workspaceId, token) => request(`/workspaces/${workspaceId}/me`, { token }),
+  // ---- workspaces -------------------------------------------------------
+  // `userToken` (optional) attaches a signed-in account's membership so the
+  // workspace shows up on their dashboard. Anonymous guests still work fine.
+  createWorkspace: (body, userToken) =>
+    request("/workspaces", { method: "POST", body, token: userToken }),
+
+  joinWorkspace: (workspaceId, body, userToken) =>
+    request(`/workspaces/${workspaceId}/join`, {
+      method: "POST",
+      body,
+      token: userToken
+    }),
+
+  workspaceMe: (workspaceId, token) =>
+    request(`/workspaces/${workspaceId}/me`, { token }),
 
   setPolicy: (workspaceId, token, permissionMode) =>
     request(`/workspaces/${workspaceId}/policy`, {

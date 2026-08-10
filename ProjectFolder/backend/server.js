@@ -9,6 +9,8 @@ import { setPersistence as setStorePersistence } from "./services/workspaceStore
 import { setPersistence as setLogPersistence } from "./services/updateLogService.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
 import executeRoutes from "./routes/executeRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
+import { setPersistence as setUserPersistence } from "./services/userStore.js";
 import { executionStats } from "./services/execution/index.js";
 
 const PORT = process.env.PORT || 5000;
@@ -32,6 +34,7 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/execute", executeRoutes);
+app.use("/api/auth", authRoutes);
 
 // Malformed or oversized JSON must not become a 500 — the editor shows the
 // message verbatim, and "Something went wrong on our side" is a lie here.
@@ -72,6 +75,7 @@ const connected = await connectDB();
 setPersistence(connected);       // Yjs snapshots
 setStorePersistence(connected);  // workspaces / members / requests
 setLogPersistence(connected);     // updatelogs (replay history)
+setUserPersistence(connected);    // user accounts (dashboard)
 setupSocket(io);
 
 server.listen(PORT, () => {

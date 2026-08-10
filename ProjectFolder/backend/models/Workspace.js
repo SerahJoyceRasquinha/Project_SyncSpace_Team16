@@ -24,6 +24,9 @@ const requestSchema = new mongoose.Schema(
   {
     requestId: { type: String, required: true },
     username: { type: String, required: true },
+    // If the requester was signed into an account, keep the link so approval
+    // can attach the membership to that account (not a throwaway guest id).
+    userId: { type: String },
     requestedAt: { type: Date, default: Date.now },
     status: {
       type: String,
