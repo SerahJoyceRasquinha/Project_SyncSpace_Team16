@@ -9,6 +9,7 @@ import { setPersistence as setStorePersistence } from "./services/workspaceStore
 import { setPersistence as setLogPersistence } from "./services/updateLogService.js";
 import workspaceRoutes from "./routes/workspaceRoutes.js";
 import executeRoutes from "./routes/executeRoutes.js";
+import aiRoutes from "./routes/aiRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import { setPersistence as setUserPersistence } from "./services/userStore.js";
 import { executionStats } from "./services/execution/index.js";
@@ -34,6 +35,7 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/workspaces/:workspaceId/execute", executeRoutes);
+app.use("/api/ai", aiRoutes);
 app.use("/api/auth", authRoutes);
 
 // Malformed or oversized JSON must not become a 500 — the editor shows the
