@@ -191,7 +191,12 @@ export default function Workspace() {
             <span className="badge pulse chat-badge">{chatUnread}</span>
           )}
         </button>
-
+   <button
+  className="ai-workspace-btn"
+  onClick={() => navigate(`/workspace/${workspaceId}/ai`)}
+  title="Open SyncSpace AI">
+     ✦ AI
+    </button>
         <button
           className="leave-btn"
           onClick={() => {
@@ -200,7 +205,7 @@ export default function Workspace() {
           }}
         >
           Leave
-        </button>
+       </button>
       </header>
 
       <main className={'split' + (panelOpen ? ' with-panel' : '')}>
