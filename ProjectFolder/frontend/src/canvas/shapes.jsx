@@ -31,7 +31,7 @@ export const COMMON_DEFAULTS = () => ({
   fillGradientStart: '#6366f1',
   fillGradientEnd: '#ec4899',
   fillGradientAngle: 0,     // degrees for linear gradient direction
-  // ---- drop shadow ---------------------------------------------------
+  // ---- drop shadow -------------------------------------------
   shadowEnabled: false,
   shadowColor: '#000000',
   shadowBlur: 10,
