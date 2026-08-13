@@ -330,3 +330,101 @@
     padding: 14px;
   }
 }
+.ai-tool-description {
+  padding: 16px 20px;
+
+  border-bottom: 1px solid #334155;
+  background: #0f172a;
+}
+
+.ai-tool-description h2 {
+  margin: 0 0 5px;
+
+  font-size: 16px;
+}
+
+.ai-tool-description p {
+  margin: 0;
+
+  color: #94a3b8;
+
+  font-size: 12px;
+}
+
+.ai-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  width: 100%;
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ai-field label {
+  color: #94a3b8;
+
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ai-field select,
+.ai-field textarea {
+  width: 100%;
+
+  padding: 10px;
+
+  border: 1px solid #475569;
+  border-radius: 8px;
+
+  outline: none;
+
+  background: #0f172a;
+  color: #f8fafc;
+
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.ai-field select:focus,
+.ai-field textarea:focus {
+  border-color: #60a5fa;
+}
+
+.ai-field textarea {
+  resize: vertical;
+
+  min-height: 70px;
+}
+
+.ai-main-field textarea {
+  min-height: 110px;
+}
+
+.ai-submit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  margin-top: 10px;
+}
+
+.ai-character-count {
+  color: #64748b;
+
+  font-size: 10px;
+}
+
+@media (max-width: 700px) {
+  .ai-form-fields {
+    gap: 8px;
+  }
+
+  .ai-submit-row {
+    align-items: flex-end;
+  }
+}

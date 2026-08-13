@@ -1,35 +1,99 @@
 import { useState } from "react";
 import AIMessage from "./AIMessage.jsx";
 
-function getPlaceholder(action) {
-  switch (action) {
-    case "explain":
-      return "Paste the code you want me to explain...";
+const LANGUAGES = [
+  "JavaScript",
+  "TypeScript",
+  "Python",
+  "Java",
+  "C",
+  "C++",
+  "C#",
+  "Go",
+  "Rust",
+  "PHP"
+];
 
-    case "generate":
-      return "Describe the code you want to generate...";
+const TARGET_LANGUAGES = [
+  "JavaScript",
+  "TypeScript",
+  "Python",
+  "Java",
+  "C",
+  "C++",
+  "C#",
+  "Go",
+  "Rust",
+  "PHP"
+];
 
-    case "error":
-      return "Paste the error message here...";
+const ACTION_CONFIG = {
+  chat: {
+    title: "AI Chat",
+    description: "Ask SyncSpace AI a programming question.",
+    inputLabel: "Your Question",
+    placeholder: "Example: Explain how REST APIs work."
+  },
 
-    case "debug":
-      return "Describe the bug or paste the error...";
+  explain: {
+    title: "Explain Code",
+    description: "Understand what your code does and how it works.",
+    inputLabel: "Code",
+    placeholder: "Paste the code you want explained..."
+  },
 
-    case "tests":
-      return "Paste the function or program...";
+  generate: {
+    title: "Generate Code",
+    description: "Describe what you want to build and let AI generate the code.",
+    inputLabel: "Requirement",
+    placeholder: "Example: Create a JavaScript function to check whether a number is prime."
+  },
 
-    case "optimize":
-      return "Paste the code you want to optimize...";
+  error: {
+    title: "Analyze Error",
+    description: "Understand an error message and find possible solutions.",
+    inputLabel: "Error Message",
+    placeholder: "Paste the error message here..."
+  },
 
-    case "convert":
-      return "Paste the code you want to convert...";
+  debug: {
+    title: "Debug Code",
+    description: "Analyze your code and error together to find the root cause.",
+    inputLabel: "Code",
+    placeholder: "Paste the code containing the problem..."
+  },
 
-    case "document":
-      return "Paste the code you want documented...";
+  tests: {
+    title: "Generate Test Cases",
+    description: "Generate normal, boundary, and edge-case tests.",
+    inputLabel: "Code",
+    placeholder: "Paste the function or program..."
+  },
 
-    default:
-      return "Ask SyncSpace AI...";
+  optimize: {
+    title: "Optimize Code",
+    description: "Find performance, readability, and maintainability improvements.",
+    inputLabel: "Code",
+    placeholder: "Paste the code you want to optimize..."
+  },
+
+  convert: {
+    title: "Convert Code",
+    description: "Convert your code from one programming language to another.",
+    inputLabel: "Code",
+    placeholder: "Paste the code you want to convert..."
+  },
+
+  document: {
+    title: "Generate Documentation",
+    description: "Create clear documentation for your code.",
+    inputLabel: "Code",
+    placeholder: "Paste the code you want documented..."
   }
+};
+
+function getActionConfig(action) {
+  return ACTION_CONFIG[action] || ACTION_CONFIG.chat;
 }
 
 export default function AIChat({
@@ -39,34 +103,64 @@ export default function AIChat({
   messages
 }) {
   const [input, setInput] = useState("");
+  const [language, setLanguage] = useState("JavaScript");
+  const [targetLanguage, setTargetLanguage] = useState("Python");
+  const [errorInput, setErrorInput] = useState("");
+
+  const config = getActionConfig(activeAction);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    const value = input.trim();
-
-    if (!value || loading) {
+    if (loading) {
       return;
     }
 
-    setInput("");
+    const trimmedInput = input.trim();
 
-    await onSubmit(value);
+    if (!trimmedInput) {
+      return;
+    }
+
+    const formData = {
+      input: trimmedInput,
+      language,
+      targetLanguage,
+      error: errorInput.trim()
+    };
+
+    setInput("");
+    setErrorInput("");
+
+    await onSubmit(formData);
   };
+
+  const showLanguage =
+    activeAction !== "chat" &&
+    activeAction !== "convert";
+
+  const showTargetLanguage =
+    activeAction === "convert";
+    
+const showErrorField =
+    activeAction === "debug";
 
   return (
     <section className="ai-chat">
+      <div className="ai-tool-description">
+        <h2>{config.title}</h2>
+
+        <p>{config.description}</p>
+      </div>
+
       <div className="ai-messages">
         {messages.length === 0 ? (
           <div className="ai-empty">
             <div className="ai-empty-icon">✦</div>
 
-            <h2>How can SyncSpace AI help?</h2>
+            <h2>{config.title}</h2>
 
-            <p>
-              Ask programming questions or choose an AI
-              development tool above.
-            </p>
+            <p>{config.description}</p>
           </div>
         ) : (
           messages.map((message) => (
@@ -97,21 +191,154 @@ export default function AIChat({
         className="ai-input-area"
         onSubmit={handleSubmit}
       >
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder={getPlaceholder(activeAction)}
-          rows={4}
-          disabled={loading}
-          maxLength={30000}
-        />
+        <div className="ai-form-fields">
+          {showLanguage && (
+            <div className="ai-field">
+              <label htmlFor="ai-language">
+                Programming Language
+              </label>
 
-        <button
-          type="submit"
-          disabled={!input.trim() || loading}
-        >
-          {loading ? "Working..." : "Send"}
-        </button>
+              <select
+                id="ai-language"
+                value={language}
+                onChange={(event) =>
+                  setLanguage(event.target.value)
+                }
+                disabled={loading}
+              >
+                {LANGUAGES.map((item) => (
+                  <option
+                    key={item}
+                    value={item}
+                  >
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {showTargetLanguage && (
+            <>
+              <div className="ai-field">
+                <label htmlFor="ai-source-language">
+                  Source Language
+                </label>
+
+                <select
+                  id="ai-source-language"
+                  value={language}
+                  onChange={(event) =>
+                    setLanguage(event.target.value)
+                  }
+                  disabled={loading}
+                >
+                  {LANGUAGES.map((item) => (
+                    <option
+                      key={item}
+                      value={item}
+                    >
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="ai-field">
+                <label htmlFor="ai-target-language">
+                  Target Language
+                </label>
+
+                <select
+                  id="ai-target-language"
+                  value={targetLanguage}
+                  onChange={(event) =>
+                    setTargetLanguage(event.target.value)
+                  }
+                  disabled={loading}
+                >
+                  {TARGET_LANGUAGES.map((item) => (
+                    <option
+                      key={item}
+                      value={item}
+                    >
+                      {item}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
+
+          {showErrorField && activeAction === "debug" && (
+            <div className="ai-field">
+              <label htmlFor="ai-error">
+                Error Message
+              </label>
+
+              <textarea
+                id="ai-error"
+                value={errorInput}
+                onChange={(event) =>
+                  setErrorInput(event.target.value)
+                }
+                placeholder="Paste the error message..."
+                rows={3}
+                disabled={loading}
+              />
+            </div>
+          )}
+
+          {showErrorField && activeAction === "error" && (
+            <div className="ai-field">
+              <label htmlFor="ai-error">
+                Error Message
+              </label>
+
+              <textarea
+                id="ai-error"
+                value={errorInput}
+                onChange={(event) =>
+                  setErrorInput(event.target.value)
+                }
+                placeholder="Paste the error message..."
+                rows={3}
+                disabled={loading}
+              />
+            </div>
+          )}
+
+          <div className="ai-field ai-main-field">
+            <label htmlFor="ai-input">
+              {config.inputLabel}
+            </label>
+
+            <textarea
+              id="ai-input"
+              value={input}
+              onChange={(event) =>
+                setInput(event.target.value)
+              }
+              placeholder={config.placeholder}
+              rows={activeAction === "chat" ? 4 : 10}
+              disabled={loading}
+              maxLength={30000}
+            />
+          </div>
+        </div>
+
+        <div className="ai-submit-row">
+          <span className="ai-character-count">
+            {input.length}/30000
+          </span>
+
+          <button
+            type="submit"
+            disabled={!input.trim() || loading}
+          >
+            {loading ? "Working..." : "Send to AI"}
+          </button>
+        </div>
       </form>
     </section>
   );

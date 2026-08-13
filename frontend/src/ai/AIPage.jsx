@@ -33,105 +33,112 @@ export default function AIPage() {
     ]);
   };
 
-  const handleSubmit = async (input) => {
-    addMessage("user", input);
-    setLoading(true);
+const handleSubmit = async (formData) => {
+  const {
+    input,
+    language,
+    targetLanguage,
+    error
+  } = formData;
 
-    try {
-      let result;
+  addMessage("user", input);
+  setLoading(true);
 
-      const token = session?.token;
+  try {
+    let result;
 
-      switch (activeAction) {
-        case "explain":
-          result = await aiApi.explain(
-            input,
-            "javascript",
-            { token }
-          );
-          break;
+    const token = session?.token;
 
-        case "generate":
-          result = await aiApi.generate(
-            input,
-            "javascript",
-            { token }
-          );
-          break;
+    switch (activeAction) {
+      case "explain":
+        result = await aiApi.explain(
+          input,
+          language,
+          { token }
+        );
+        break;
 
-        case "error":
-          result = await aiApi.analyzeError(
-            input,
-            "",
-            "javascript",
-            { token }
-          );
-          break;
+      case "generate":
+        result = await aiApi.generate(
+          input,
+          language,
+          { token }
+        );
+        break;
 
-        case "debug":
-          result = await aiApi.debug(
-            input,
-            "",
-            "javascript",
-            { token }
-          );
-          break;
+      case "error":
+        result = await aiApi.analyzeError(
+          error || input,
+          "",
+          language,
+          { token }
+        );
+        break;
 
-        case "tests":
-          result = await aiApi.generateTests(
-            input,
-            "javascript",
-            { token }
-          );
-          break;
+      case "debug":
+        result = await aiApi.debug(
+          input,
+          error,
+          language,
+          { token }
+        );
+        break;
 
-        case "optimize":
-          result = await aiApi.optimize(
-            input,
-            "javascript",
-            { token }
-          );
-          break;
+      case "tests":
+        result = await aiApi.generateTests(
+          input,
+          language,
+          { token }
+        );
+        break;
 
-        case "convert":
-          result = await aiApi.convert(
-            input,
-            "javascript",
-            "python",
-            { token }
-          );
-          break;
+      case "optimize":
+        result = await aiApi.optimize(
+          input,
+          language,
+          { token }
+        );
+        break;
 
-        case "document":
-          result = await aiApi.document(
-            input,
-            "javascript",
-            { token }
-          );
-          break;
+      case "convert":
+        result = await aiApi.convert(
+          input,
+          language,
+          targetLanguage,
+          { token }
+        );
+        break;
 
-        case "chat":
-        default:
-          result = await aiApi.chat(
-            input,
-            { token }
-          );
-          break;
-      }
+      case "document":
+        result = await aiApi.document(
+          input,
+          language,
+          { token }
+        );
+        break;
 
-      addMessage(
-        "assistant",
-        result.answer || "The AI returned no answer."
-      );
-    } catch (error) {
-      addMessage(
-        "assistant",
-        `Error: ${error.message}`
-      );
-    } finally {
-      setLoading(false);
+      case "chat":
+      default:
+        result = await aiApi.chat(
+          input,
+          { token }
+        );
+        break;
     }
-  };
+
+    addMessage(
+      "assistant",
+      result.answer || "The AI returned no answer."
+    );
+  } catch (error) {
+    addMessage(
+      "assistant",
+      `Error: ${error.message}`
+    );
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleBack = () => {
     if (workspaceId) {
