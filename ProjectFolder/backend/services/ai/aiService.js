@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { getPrompt } from "./prompts.js";
 
 let client = null;
@@ -8,14 +8,14 @@ function getClient() {
     return client;
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
     return null;
   }
 
-  client = new OpenAI({
-    apiKey
+  client = new GoogleGenAI({
+    apiKey,
   });
 
   return client;
@@ -28,7 +28,7 @@ function buildUserPrompt(data) {
     code,
     error,
     language,
-    targetLanguage
+    targetLanguage,
   } = data;
 
   const sections = [];
@@ -66,32 +66,46 @@ ${sections.join("\n\n")}
 }
 
 export async function runAI(data) {
-  const openai = getClient();
+  const gemini = getClient();
 
   /*
-   * During initial development, allow the API to be tested
-   * without an API key.
+   * During initial development, allow the API
+   * to work without a Gemini API key.
    */
-  if (!openai) {
+  if (!gemini) {
     return {
       success: true,
       provider: "mock",
       answer:
-        "SyncSpace AI backend is working, but no OPENAI_API_KEY is configured yet. The real AI provider will be connected in the next step."
+        "SyncSpace AI backend is working, but no GEMINI_API_KEY is configured yet.",
     };
   }
 
-  const model = process.env.OPENAI_MODEL || "gpt-5-mini";
+  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-  const response = await openai.responses.create({
-    model,
-    instructions: getPrompt(data.action),
-    input: buildUserPrompt(data)
-  });
+  try {
+    const response = await gemini.models.generateContent({
+      model,
+      contents: buildUserPrompt(data),
+      config: {
+        systemInstruction: getPrompt(data.action),
+      },
+    });
 
-  return {
-    success: true,
-    provider: "openai",
-    answer: response.output_text || "The AI returned an empty response."
-  };
+    return {
+      success: true,
+      provider: "gemini",
+      answer:
+        response.text || "Gemini returned an empty response.",
+    };
+  } catch (error) {
+    console.error("Gemini API Error:", error);
+
+    return {
+      success: false,
+      provider: "gemini",
+      answer: "Gemini failed to generate a response.",
+      error: error.message,
+    };
+  }
 }
