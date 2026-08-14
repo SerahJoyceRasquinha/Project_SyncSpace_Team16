@@ -77,7 +77,7 @@ function Slider({ label, value, onChange, min, max, step = 1, format }) {
  * references mid-gesture) and every callback is memoised upstream, so the panel
  * itself does not re-render on those frames.
  */
-function PropertyPanel({ selection = [], patch, onDelete, onDuplicate, onReorder }) {
+function PropertyPanel({ selection = [], patch, onDelete, onDuplicate, onReorder, onAlignHorizontally, onAlignVertically, onDistributeHorizontally, onDistributeVertically }) {
   if (!selection.length) return null;
   if (selection.length === 1) {
     return (
@@ -97,6 +97,10 @@ function PropertyPanel({ selection = [], patch, onDelete, onDuplicate, onReorder
       onDelete={onDelete}
       onDuplicate={onDuplicate}
       onReorder={onReorder}
+      onAlignHorizontally={onAlignHorizontally}
+      onAlignVertically={onAlignVertically}
+      onDistributeHorizontally={onDistributeHorizontally}
+      onDistributeVertically={onDistributeVertically}
     />
   );
 }
@@ -518,7 +522,7 @@ function sharedBy(list, fn) {
  * A value that differs across the selection is reported as "Mixed" and left
  * un-highlighted until the user picks one, which then unifies it.
  */
-function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder }) {
+function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder, onAlignHorizontally, onAlignVertically, onDistributeHorizontally, onDistributeVertically }) {
   const canFillAll = selection.every(
     (s) => !isConnector(s.type) && !isImageType(s.type) &&
            (isFillable(s.type) || isTextType(s.type))
@@ -635,6 +639,32 @@ function MultiProperties({ selection, patch, onDelete, onDuplicate, onReorder })
           {allLocked ? '🔒' : '🔓'}
         </button>
       </div>
+
+      {selection.length >= 2 && !anyConn && (
+        <>
+          <label className="prop-label">Align</label>
+          <div className="prop-btn-row">
+            <button className="fmt icon" title="Align left" onClick={() => onAlignHorizontally?.('left')}>⬅</button>
+            <button className="fmt icon" title="Align center" onClick={() => onAlignHorizontally?.('center')}>↔</button>
+            <button className="fmt icon" title="Align right" onClick={() => onAlignHorizontally?.('right')}>➡</button>
+          </div>
+          <div className="prop-btn-row">
+            <button className="fmt icon" title="Align top" onClick={() => onAlignVertically?.('top')}>⬆</button>
+            <button className="fmt icon" title="Align center" onClick={() => onAlignVertically?.('center')}>↕</button>
+            <button className="fmt icon" title="Align bottom" onClick={() => onAlignVertically?.('bottom')}>⬇</button>
+          </div>
+
+          {selection.length >= 3 && (
+            <>
+              <label className="prop-label">Distribute</label>
+              <div className="prop-btn-row">
+                <button className="fmt grow" title="Distribute horizontally" onClick={onDistributeHorizontally}>H-dist</button>
+                <button className="fmt grow" title="Distribute vertically" onClick={onDistributeVertically}>V-dist</button>
+              </div>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }

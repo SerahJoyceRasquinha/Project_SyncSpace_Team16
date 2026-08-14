@@ -11,7 +11,8 @@ import { normalizeShapes } from '../canvas/normalize.js';
 import {
   shapesArray, readShape, addShape, updateShape, updateShapeLive, updateMany,
   removeShapes, clearAll, duplicateShapes, reorderShape,
-  commitStroke, applyErase
+  commitStroke, applyErase, alignShapesHorizontally, alignShapesVertically,
+  distributeShapesHorizontally, distributeShapesVertically
 } from '../canvas/shapeDoc.js';
 import {
   isDraggableLine, isTextType, isCentered, isConnector, CONNECTOR_DEFAULTS
@@ -1217,6 +1218,23 @@ export default function Canvas({ ydoc, awareness }) {
     for (const s of selectedShapes) reorderShape(ydoc, s.id, dir);
   }, [selectedShapes, ydoc]);
 
+  // Alignment and distribution callbacks
+  const alignHorizontally = useCallback((type) => {
+    alignShapesHorizontally(ydoc, selectedIds, type);
+  }, [ydoc, selectedIds]);
+
+  const alignVertically = useCallback((type) => {
+    alignShapesVertically(ydoc, selectedIds, type);
+  }, [ydoc, selectedIds]);
+
+  const distributeHorizontally = useCallback(() => {
+    distributeShapesHorizontally(ydoc, selectedIds);
+  }, [ydoc, selectedIds]);
+
+  const distributeVertically = useCallback(() => {
+    distributeShapesVertically(ydoc, selectedIds);
+  }, [ydoc, selectedIds]);
+
   return (
     <div className="pane whiteboard-pane">
       <div className="pane-header column">
@@ -1498,6 +1516,10 @@ export default function Canvas({ ydoc, awareness }) {
           onDelete={deleteSelected}
           onDuplicate={duplicateSelected}
           onReorder={reorderSelection}
+          onAlignHorizontally={alignHorizontally}
+          onAlignVertically={alignVertically}
+          onDistributeHorizontally={distributeHorizontally}
+          onDistributeVertically={distributeVertically}
         />
       </div>
 
