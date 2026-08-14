@@ -295,3 +295,231 @@ export function bringToFront(ydoc, id) {
   if ((target.get('zIndex') || 0) >= max) return; // already on top: nothing to do
   ydoc.transact(() => { target.set('zIndex', max + 1); }, LIVE_ORIGIN);
 }
+
+/**
+ * Get bounding box of a shape for alignment purposes.
+ * Handles both regular shapes (with width/height) and freehand paths (with points).
+ */
+function getShapeBounds(shape) {
+  const x = shape.x || 0;
+  const y = shape.y || 0;
+  const width = shape.width || 0;
+  const height = shape.height || 0;
+  const points = shape.points || [];
+
+  // For freehand strokes, calculate bounds from points
+  if (points.length > 0) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < points.length; i += 2) {
+      const px = points[i];
+      const py = points[i + 1];
+      minX = Math.min(minX, px);
+      minY = Math.min(minY, py);
+      maxX = Math.max(maxX, px);
+      maxY = Math.max(maxY, py);
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  return { x, y, width, height };
+}
+
+/**
+ * Align multiple shapes horizontally (left, center, right).
+ * Aligns all shapes to the first selected shape's position.
+ */
+export function alignShapesHorizontally(ydoc, ids, type) {
+  if (ids.length < 2) return;
+  
+  const arr = shapesArray(ydoc);
+  const shapes = [];
+  const shapeMap = new Map();
+  
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr.get(i);
+    const id = m.get('id');
+    if (ids.includes(id)) {
+      const shape = readShape(m);
+      shapes.push(shape);
+      shapeMap.set(id, { map: m, shape });
+    }
+  }
+
+  if (shapes.length < 2) return;
+
+  const bounds = shapes.map(s => getShapeBounds(s));
+  let targetX = bounds[0].x;
+
+  if (type === 'center') {
+    targetX = bounds[0].x + bounds[0].width / 2;
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        const b = bounds[i];
+        const newX = targetX - b.width / 2;
+        shapeMap.get(ids[i]).map.set('x', newX);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  } else if (type === 'right') {
+    targetX = bounds[0].x + bounds[0].width;
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        const b = bounds[i];
+        const newX = targetX - b.width;
+        shapeMap.get(ids[i]).map.set('x', newX);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  } else {
+    // 'left' - align to left edge
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        shapeMap.get(ids[i]).map.set('x', targetX);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  }
+}
+
+/**
+ * Align multiple shapes vertically (top, center, bottom).
+ */
+export function alignShapesVertically(ydoc, ids, type) {
+  if (ids.length < 2) return;
+  
+  const arr = shapesArray(ydoc);
+  const shapes = [];
+  const shapeMap = new Map();
+  
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr.get(i);
+    const id = m.get('id');
+    if (ids.includes(id)) {
+      const shape = readShape(m);
+      shapes.push(shape);
+      shapeMap.set(id, { map: m, shape });
+    }
+  }
+
+  if (shapes.length < 2) return;
+
+  const bounds = shapes.map(s => getShapeBounds(s));
+  let targetY = bounds[0].y;
+
+  if (type === 'center') {
+    targetY = bounds[0].y + bounds[0].height / 2;
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        const b = bounds[i];
+        const newY = targetY - b.height / 2;
+        shapeMap.get(ids[i]).map.set('y', newY);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  } else if (type === 'bottom') {
+    targetY = bounds[0].y + bounds[0].height;
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        const b = bounds[i];
+        const newY = targetY - b.height;
+        shapeMap.get(ids[i]).map.set('y', newY);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  } else {
+    // 'top' - align to top edge
+    ydoc.transact(() => {
+      for (let i = 1; i < shapes.length; i++) {
+        shapeMap.get(ids[i]).map.set('y', targetY);
+        shapeMap.get(ids[i]).map.set('updatedAt', Date.now());
+      }
+    });
+  }
+}
+
+/**
+ * Distribute shapes horizontally with equal spacing.
+ * Arranges shapes so gaps between them are equal.
+ */
+export function distributeShapesHorizontally(ydoc, ids) {
+  if (ids.length < 3) return;
+  
+  const arr = shapesArray(ydoc);
+  const shapes = [];
+  const shapeMap = new Map();
+  
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr.get(i);
+    const id = m.get('id');
+    if (ids.includes(id)) {
+      const shape = readShape(m);
+      shapes.push(shape);
+      shapeMap.set(id, { map: m, shape, idx: i });
+    }
+  }
+
+  if (shapes.length < 3) return;
+
+  const bounds = shapes.map(s => getShapeBounds(s));
+  
+  // Sort by x position
+  const sorted = bounds.map((b, i) => ({ bound: b, id: ids[i], idx: i }))
+    .sort((a, b) => a.bound.x - b.bound.x);
+
+  // Calculate total space and gaps
+  const firstX = sorted[0].bound.x + sorted[0].bound.width;
+  const lastX = sorted[sorted.length - 1].bound.x;
+  const totalSpace = lastX - firstX;
+  const gap = totalSpace / (sorted.length - 1);
+
+  ydoc.transact(() => {
+    for (let i = 1; i < sorted.length - 1; i++) {
+      const newX = firstX + (gap * i) - sorted[i].bound.width / 2;
+      shapeMap.get(sorted[i].id).map.set('x', newX);
+      shapeMap.get(sorted[i].id).map.set('updatedAt', Date.now());
+    }
+  });
+}
+
+/**
+ * Distribute shapes vertically with equal spacing.
+ */
+export function distributeShapesVertically(ydoc, ids) {
+  if (ids.length < 3) return;
+  
+  const arr = shapesArray(ydoc);
+  const shapes = [];
+  const shapeMap = new Map();
+  
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr.get(i);
+    const id = m.get('id');
+    if (ids.includes(id)) {
+      const shape = readShape(m);
+      shapes.push(shape);
+      shapeMap.set(id, { map: m, shape, idx: i });
+    }
+  }
+
+  if (shapes.length < 3) return;
+
+  const bounds = shapes.map(s => getShapeBounds(s));
+  
+  // Sort by y position
+  const sorted = bounds.map((b, i) => ({ bound: b, id: ids[i], idx: i }))
+    .sort((a, b) => a.bound.y - b.bound.y);
+
+  // Calculate total space and gaps
+  const firstY = sorted[0].bound.y + sorted[0].bound.height;
+  const lastY = sorted[sorted.length - 1].bound.y;
+  const totalSpace = lastY - firstY;
+  const gap = totalSpace / (sorted.length - 1);
+
+  ydoc.transact(() => {
+    for (let i = 1; i < sorted.length - 1; i++) {
+      const newY = firstY + (gap * i) - sorted[i].bound.height / 2;
+      shapeMap.get(sorted[i].id).map.set('y', newY);
+      shapeMap.get(sorted[i].id).map.set('updatedAt', Date.now());
+    }
+  });
+}
