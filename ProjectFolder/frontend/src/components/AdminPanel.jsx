@@ -20,6 +20,7 @@ export default function AdminPanel({
   peers,
   admin,
   onClose,
+  onDelete,
   toast
 }) {
   const [busy, setBusy] = useState(null);
@@ -155,6 +156,21 @@ export default function AdminPanel({
           }}
         >
           Copy workspace ID
+        </button>
+        <button
+          className="danger-btn"
+          disabled={busy === 'delete'}
+          onClick={async () => {
+            if (!onDelete) {
+              toast('Delete action is unavailable.', 'error');
+              return;
+            }
+            setBusy('delete');
+            await onDelete();
+            setBusy(null);
+          }}
+        >
+          Delete workspace
         </button>
       </section>
     </aside>

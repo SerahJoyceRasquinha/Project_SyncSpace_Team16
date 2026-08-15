@@ -107,25 +107,54 @@ call :ok "package.json present in both projects."
 
 rem ===========================================================================
 rem  2) ENVIRONMENT FILES
-rem     No variables are mandatory: the backend runs in memory-only mode with
-rem     safe defaults. We just make sure frontend\.env exists when an example
-rem     is provided, so deployment config has a home later.
+rem     The app itself runs with no configuration at all - memory-only
+rem     persistence, remote code execution via a public fallback.
+rem
+rem     SyncSpace AI is the exception: it needs GEMINI_API_KEY in backend\.env.
+rem     That file is gitignored, so it is the thing most likely to be missing
+rem     after copying, re-zipping or cloning the project - and its absence used
+rem     to be silent, which made the AI panel look broken rather than
+rem     unconfigured. This step now creates it and says so plainly.
 rem ===========================================================================
 call :step "Checking environment files..."
 
+rem --- frontend: client-safe settings only -----------------------------------
 if exist "%FRONTEND_DIR%\.env" (
   call :ok "frontend\.env present."
-) else if exist "%~dp0.env.example" (
-  copy /y "%~dp0.env.example" "%FRONTEND_DIR%\.env" >nul 2>nul
-  if exist "%FRONTEND_DIR%\.env" (
-    call :warn "frontend\.env was missing - created it from .env.example."
-  ) else (
-    call :warn "Could not create frontend\.env from .env.example - continuing with defaults."
-  )
+) else if exist "%FRONTEND_DIR%\.env.example" (
+  copy /y "%FRONTEND_DIR%\.env.example" "%FRONTEND_DIR%\.env" >nul 2>nul
+  call :warn "frontend\.env was missing - created it from frontend\.env.example."
 ) else (
-  call :info "No .env needed - safe defaults are built in."
+  call :info "No frontend\.env needed - safe defaults are built in."
 )
-call :info "No mandatory env vars. Set MONGO_URI in a backend .env only if you want persistence."
+
+rem --- backend: server secrets, including the AI key --------------------------
+if not exist "%BACKEND_DIR%\.env" (
+  if exist "%BACKEND_DIR%\.env.example" (
+    copy /y "%BACKEND_DIR%\.env.example" "%BACKEND_DIR%\.env" >nul 2>nul
+    call :warn "backend\.env was missing - created it from backend\.env.example."
+  )
+)
+
+rem Is a Gemini key actually set? findstr looks for the key name followed by a
+rem non-empty value, on a line that is not commented out.
+set "AI_KEY_SET="
+if exist "%BACKEND_DIR%\.env" (
+  findstr /R /C:"^GEMINI_API_KEY=..*" "%BACKEND_DIR%\.env" >nul 2>nul && set "AI_KEY_SET=1"
+)
+
+if defined AI_KEY_SET (
+  call :ok "SyncSpace AI configured (GEMINI_API_KEY found in backend\.env)."
+) else (
+  echo.
+  call :warn "SyncSpace AI is NOT configured - the AI panel will not answer."
+  call :info "  Fix: get a free key at https://aistudio.google.com/apikey"
+  call :info "       then open backend\.env and set:  GEMINI_API_KEY=your-key"
+  call :info "       (no quotes, no spaces around '=', then restart this script)"
+  call :info "  Everything else in SyncSpace works without it."
+  echo.
+)
+call :info "No other mandatory env vars. Set MONGO_URI in backend\.env only if you want persistence."
 
 rem ===========================================================================
 rem  3) DEPENDENCIES  (install only when node_modules is absent)

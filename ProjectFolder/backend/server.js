@@ -83,5 +83,18 @@ setupSocket(io);
 server.listen(PORT, () => {
   console.log(`\n  SyncSpace backend  ->  http://localhost:${PORT}`);
   console.log(`  Health check       ->  http://localhost:${PORT}/api/health`);
-  console.log(`  Persistence        ->  ${connected ? "MongoDB" : "memory only (workspaces reset on restart)"}\n`);
+  console.log(`  Persistence        ->  ${connected ? "MongoDB" : "memory only (workspaces reset on restart)"}`);
+
+  // The AI key lives in a gitignored file, so it is the setting most likely to
+  // be missing after the project is copied or re-archived. Saying so at startup
+  // turns "the AI panel is broken" into "the AI panel is unconfigured", which
+  // is a five-second fix instead of a debugging session.
+  if (process.env.GEMINI_API_KEY) {
+    console.log(`  SyncSpace AI       ->  ready`);
+  } else {
+    console.log(`  SyncSpace AI       ->  NOT CONFIGURED`);
+    console.log(`                         set GEMINI_API_KEY in backend/.env`);
+    console.log(`                         free key: https://aistudio.google.com/apikey`);
+  }
+  console.log("");
 });
