@@ -72,3 +72,42 @@ export async function addMembership(userId, workspaceId, role = 'member') {
   return clone(record);
 }
 
+export async function removeMembership(userId, workspaceId) {
+  if (!userId || !workspaceId) return null;
+
+  if (persistent) {
+    const doc = await User.findOne({ userId });
+    if (!doc) return null;
+    doc.workspaces = (doc.workspaces || []).filter((w) => w.workspaceId !== workspaceId);
+    await doc.save();
+    return doc.toObject();
+  }
+
+  const record = memory.get(userId);
+  if (!record) return null;
+  record.workspaces = (record.workspaces || []).filter((w) => w.workspaceId !== workspaceId);
+  record.updatedAt = new Date();
+  return clone(record);
+}
+
+export async function removeMembershipForWorkspace(workspaceId) {
+  if (!workspaceId) return 0;
+
+  if (persistent) {
+    const result = await User.updateMany(
+      { 'workspaces.workspaceId': workspaceId },
+      { $pull: { workspaces: { workspaceId } } }
+    );
+    return result.modifiedCount || 0;
+  }
+
+  let removed = 0;
+  for (const record of memory.values()) {
+    const before = record.workspaces?.length || 0;
+    record.workspaces = (record.workspaces || []).filter((w) => w.workspaceId !== workspaceId);
+    if ((record.workspaces || []).length !== before) removed += (before - (record.workspaces || []).length);
+    record.updatedAt = new Date();
+  }
+  return removed;
+}
+
