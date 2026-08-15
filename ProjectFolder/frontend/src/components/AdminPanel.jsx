@@ -160,11 +160,15 @@ export default function AdminPanel({
         <button
           className="danger-btn"
           disabled={busy === 'delete'}
-          onClick={() => run('delete', async () => {
-            if (!onDelete) return { ok: false, message: 'Delete action is unavailable.' };
+          onClick={async () => {
+            if (!onDelete) {
+              toast('Delete action is unavailable.', 'error');
+              return;
+            }
+            setBusy('delete');
             await onDelete();
-            return { ok: true };
-          }, 'Workspace deleted.')}
+            setBusy(null);
+          }}
         >
           Delete workspace
         </button>

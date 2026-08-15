@@ -64,14 +64,18 @@ export default function Dashboard() {
 
   const handleDelete = async (item) => {
     const ws = item.workspace || item;
-    if (!account?.token || !window.confirm(`Delete "${ws.name}"? Everyone will lose access to it immediately.`)) {
+    if (membershipRole(item) !== 'admin' || !account?.token || !window.confirm(`Delete "${ws.name}"? Everyone will lose access to it immediately.`)) {
       return;
     }
 
     setDeleting(ws.workspaceId);
     setError('');
     try {
-      await api.deleteWorkspace(ws.workspaceId, account.token);
+      // Dashboard authentication identifies the account, but deletion requires
+      // a workspace access token. Re-enter first so the server can verify this
+      // account is still the administrator of this exact workspace.
+      const access = await api.enterWorkspace(ws.workspaceId, account.token);
+      await api.deleteWorkspace(ws.workspaceId, access.token);
       setWorkspaces((current) => current.filter((entry) => (entry.workspace || entry).workspaceId !== ws.workspaceId));
     } catch (err) {
       setError(err.message);
@@ -154,13 +158,15 @@ export default function Dashboard() {
                     >
                       {opening === ws.workspaceId ? 'Opening…' : 'Open workspace'}
                     </button>
-                    <button
-                      className="btn-remove danger"
-                      onClick={() => handleDelete(item)}
-                      disabled={deleting === ws.workspaceId}
-                    >
-                      {deleting === ws.workspaceId ? 'Deleting…' : 'Delete'}
-                    </button>
+                    {membershipRole(item) === 'admin' && (
+                      <button
+                        className="btn-remove danger"
+                        onClick={() => handleDelete(item)}
+                        disabled={deleting === ws.workspaceId}
+                      >
+                        {deleting === ws.workspaceId ? 'Deleting…' : 'Delete'}
+                      </button>
+                    )}
                   </div>
                 </div>
               );

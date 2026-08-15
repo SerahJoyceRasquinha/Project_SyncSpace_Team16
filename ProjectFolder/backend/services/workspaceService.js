@@ -296,17 +296,14 @@ export async function deleteWorkspaceByAdmin({ workspaceId, actorId }) {
   if (!workspace) return fail(404, 'Workspace not found.');
   if (workspace.adminId !== actorId) return fail(403, 'Only the workspace administrator can delete it.');
 
-  const deleted = await deleteWorkspace(workspaceId);
+  // Keep the authorization condition in the delete query as well. This closes
+  // the gap between the check above and the destructive write.
+  const deleted = await deleteWorkspace(workspaceId, { adminId: actorId });
   if (!deleted) return fail(404, 'Workspace not found.');
 
   await removeMembershipForWorkspace(workspaceId);
 
-  for (const member of workspace.members || []) {
-    rt.disconnectUser(workspaceId, member.userId, 'The administrator deleted this workspace.');
-  }
-  rt.toWorkspace(workspaceId, 'workspace:deleted', {
-    reason: 'The administrator deleted this workspace.'
-  });
+  rt.disconnectWorkspace(workspaceId, 'The administrator deleted this workspace.');
 
   return { ok: true, workspaceId };
 }

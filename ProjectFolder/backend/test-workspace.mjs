@@ -156,6 +156,12 @@ const dupe = await post(`/workspaces/${wsId}/join`, {
 check('duplicate username is refused', dupe.status === 409);
 
 // 10 -------------------------------------------------------- delete workspace
+const memberDelete = await fetch(`${URL}/api/workspaces/${wsId}`, {
+  method: 'DELETE',
+  headers: { Authorization: `Bearer ${approvedToken}` }
+});
+check('member cannot delete an administrator workspace', memberDelete.status === 403);
+
 const deleted = await fetch(`${URL}/api/workspaces/${wsId}`, {
   method: 'DELETE',
   headers: { Authorization: `Bearer ${adminToken}` }
