@@ -16,7 +16,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(null);
-  const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     if (!ready) return;

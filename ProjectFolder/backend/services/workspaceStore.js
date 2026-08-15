@@ -55,18 +55,15 @@ export async function findWorkspacesByUser(userId) {
   if (!userId) return [];
   if (persistent) {
     const docs = await Workspace.find({ 'members.userId': userId }).lean();
-    return docs
-      .filter((ws) => ws && ws.workspaceId)
-      .map((ws) => ({
-        workspace: publicView(ws),
-        member: findMember(ws, userId)
-      }))
-      .filter((entry) => entry.workspace && entry.member);
+    return docs.map((ws) => ({
+      workspace: publicView(ws),
+      member: findMember(ws, userId)
+    }));
   }
   const out = [];
   for (const ws of memory.values()) {
     const member = findMember(ws, userId);
-    if (member && ws && ws.workspaceId) out.push({ workspace: publicView(ws), member });
+    if (member) out.push({ workspace: publicView(ws), member });
   }
   return out;
 }
