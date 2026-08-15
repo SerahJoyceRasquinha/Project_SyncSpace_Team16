@@ -16,7 +16,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [opening, setOpening] = useState(null);
-  const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     if (!ready) return;
@@ -61,24 +60,6 @@ export default function Dashboard() {
   };
 
   const membershipRole = (item) => (item.member?.role || item.role || 'member');
-
-  const handleDelete = async (item) => {
-    const ws = item.workspace || item;
-    if (!account?.token || !window.confirm(`Delete "${ws.name}"? Everyone will lose access to it immediately.`)) {
-      return;
-    }
-
-    setDeleting(ws.workspaceId);
-    setError('');
-    try {
-      await api.deleteWorkspace(ws.workspaceId, account.token);
-      setWorkspaces((current) => current.filter((entry) => (entry.workspace || entry).workspaceId !== ws.workspaceId));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeleting(null);
-    }
-  };
 
   if (!ready) {
     return (
@@ -146,22 +127,13 @@ export default function Dashboard() {
                     <span className="tag admin">{membershipRole(item)}</span>
                     <span>{(ws.members && ws.members.length) || ws.memberCount || 1} member(s)</span>
                   </div>
-                  <div className="dash-card-actions">
-                    <button
-                      className="btn"
-                      onClick={() => open(item)}
-                      disabled={opening === ws.workspaceId}
-                    >
-                      {opening === ws.workspaceId ? 'Opening…' : 'Open workspace'}
-                    </button>
-                    <button
-                      className="btn-remove danger"
-                      onClick={() => handleDelete(item)}
-                      disabled={deleting === ws.workspaceId}
-                    >
-                      {deleting === ws.workspaceId ? 'Deleting…' : 'Delete'}
-                    </button>
-                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => open(item)}
+                    disabled={opening === ws.workspaceId}
+                  >
+                    {opening === ws.workspaceId ? 'Opening…' : 'Open workspace'}
+                  </button>
                 </div>
               );
             })}
