@@ -55,18 +55,15 @@ export async function findWorkspacesByUser(userId) {
   if (!userId) return [];
   if (persistent) {
     const docs = await Workspace.find({ 'members.userId': userId }).lean();
-    return docs
-      .filter((ws) => ws && ws.workspaceId)
-      .map((ws) => ({
-        workspace: publicView(ws),
-        member: findMember(ws, userId)
-      }))
-      .filter((entry) => entry.workspace && entry.member);
+    return docs.map((ws) => ({
+      workspace: publicView(ws),
+      member: findMember(ws, userId)
+    }));
   }
   const out = [];
   for (const ws of memory.values()) {
     const member = findMember(ws, userId);
-    if (member && ws && ws.workspaceId) out.push({ workspace: publicView(ws), member });
+    if (member) out.push({ workspace: publicView(ws), member });
   }
   return out;
 }
@@ -91,21 +88,6 @@ export async function updateWorkspace(workspaceId, mutate) {
   record.updatedAt = new Date();
   memory.set(workspaceId, record);
   return { workspace: clone(record), result };
-}
-
-export async function deleteWorkspace(workspaceId, { adminId } = {}) {
-  if (!workspaceId) return null;
-
-  if (persistent) {
-    const query = { workspaceId, ...(adminId ? { adminId } : {}) };
-    const doc = await Workspace.findOneAndDelete(query);
-    return doc ? doc.toObject() : null;
-  }
-
-  const record = memory.get(workspaceId);
-  if (!record || (adminId && record.adminId !== adminId)) return null;
-  memory.delete(workspaceId);
-  return clone(record);
 }
 
 // ---- helpers used by controllers + sockets ------------------------------

@@ -69,9 +69,6 @@ export const api = {
   createWorkspace: (body, userToken) =>
     request("/workspaces", { method: "POST", body, token: userToken }),
 
-  deleteWorkspace: (workspaceId, token) =>
-    request(`/workspaces/${workspaceId}`, { method: "DELETE", token }),
-
   joinWorkspace: (workspaceId, body, userToken) =>
     request(`/workspaces/${workspaceId}/join`, {
       method: "POST",

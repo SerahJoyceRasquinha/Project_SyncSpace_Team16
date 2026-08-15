@@ -3,13 +3,12 @@ import {
   createWorkspace,
   findWorkspace,
   updateWorkspace,
-  deleteWorkspace,
   publicView,
   pendingOf,
   isUsernameTaken,
   findMember
 } from './workspaceStore.js';
-import { addMembership, removeMembershipForWorkspace } from './userStore.js';
+import { addMembership } from './userStore.js';
 import { generateWorkspaceId, newId } from '../utils/ids.js';
 import { signAccessToken, signLobbyTicket } from '../utils/token.js';
 import * as rt from './realtime.js';
@@ -289,23 +288,6 @@ export async function closeWorkspace({ workspaceId }) {
   }
 
   return { ok: true };
-}
-
-export async function deleteWorkspaceByAdmin({ workspaceId, actorId }) {
-  const workspace = await findWorkspace(workspaceId);
-  if (!workspace) return fail(404, 'Workspace not found.');
-  if (workspace.adminId !== actorId) return fail(403, 'Only the workspace administrator can delete it.');
-
-  // Keep the authorization condition in the delete query as well. This closes
-  // the gap between the check above and the destructive write.
-  const deleted = await deleteWorkspace(workspaceId, { adminId: actorId });
-  if (!deleted) return fail(404, 'Workspace not found.');
-
-  await removeMembershipForWorkspace(workspaceId);
-
-  rt.disconnectWorkspace(workspaceId, 'The administrator deleted this workspace.');
-
-  return { ok: true, workspaceId };
 }
 
 // -------------------------------------------------------------- read side

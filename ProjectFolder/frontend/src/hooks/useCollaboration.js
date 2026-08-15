@@ -116,7 +116,6 @@ export function useCollaboration(workspaceId, session) {
 
     socket.on('workspace:removed', ({ reason }) => setFatal(reason));
     socket.on('workspace:closed', ({ reason }) => setFatal(reason));
-    socket.on('workspace:deleted', ({ reason }) => setFatal(reason));
 
     setCtx({ ydoc, awareness });
     refreshPeers();

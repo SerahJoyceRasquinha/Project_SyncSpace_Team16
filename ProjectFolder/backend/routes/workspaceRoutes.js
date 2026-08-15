@@ -14,7 +14,6 @@ const router = Router();
 // keeping the whole flow fully usable by anonymous guests.
 router.post('/', optionalUser, ctrl.create);
 router.get('/:workspaceId', ctrl.peek);
-router.delete('/:workspaceId', requireMember, requireAdmin, ctrl.deleteWorkspace);
 router.post('/:workspaceId/join', optionalUser, ctrl.join);
 router.post('/:workspaceId/enter', requireUser, ctrl.enter);
 
