@@ -3,12 +3,13 @@ import {
   createWorkspace,
   findWorkspace,
   updateWorkspace,
+  deleteWorkspace,
   publicView,
   pendingOf,
   isUsernameTaken,
   findMember
 } from './workspaceStore.js';
-import { addMembership } from './userStore.js';
+import { addMembership, removeMembershipForWorkspace } from './userStore.js';
 import { generateWorkspaceId, newId } from '../utils/ids.js';
 import { signAccessToken, signLobbyTicket } from '../utils/token.js';
 import * as rt from './realtime.js';

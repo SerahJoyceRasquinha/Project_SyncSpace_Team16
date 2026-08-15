@@ -20,6 +20,7 @@ export default function AdminPanel({
   peers,
   admin,
   onClose,
+  onDelete,
   toast
 }) {
   const [busy, setBusy] = useState(null);

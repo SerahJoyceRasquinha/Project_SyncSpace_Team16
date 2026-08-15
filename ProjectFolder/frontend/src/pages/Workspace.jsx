@@ -9,6 +9,7 @@ import AdminPanel from '../components/AdminPanel.jsx';
 import ReplaySlider from '../components/ReplaySlider.jsx';
 import ChatPanel from '../components/ChatPanel.jsx';
 import { Toaster } from '../components/Toast.jsx';
+import { api } from '../utils/api';
 
 export default function Workspace() {
   const { workspaceId } = useParams();
@@ -253,6 +254,7 @@ export default function Workspace() {
             peers={peers}
             admin={admin}
             onClose={() => setPanelOpen(false)}
+            onDelete={handleDeleteWorkspace}
             toast={toast}
           />
         )}
