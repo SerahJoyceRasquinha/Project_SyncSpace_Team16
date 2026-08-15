@@ -202,3 +202,21 @@ export async function close(req, res, next) {
     next(err);
   }
 }
+
+// DELETE /api/workspaces/:workspaceId  (admin)
+export async function deleteWorkspace(req, res, next) {
+  try {
+    const id = validateWorkspaceId(req.params.workspaceId);
+    if (!id.ok) return res.status(400).json({ error: id.message });
+
+    return send(
+      res,
+      await svc.deleteWorkspaceByAdmin({
+        workspaceId: id.workspaceId,
+        actorId: req.user.userId
+      })
+    );
+  } catch (err) {
+    next(err);
+  }
+}
