@@ -11,7 +11,9 @@
     "test:execute": "node test-execute.mjs",
     "test:replay": "node test-replay.mjs",
     "test:replay-stress": "node stress-replay.mjs",
-    "test:updatelog": "node test-updatelog.mjs"
+    "test:updatelog": "node test-updatelog.mjs",
+    "test:ai": "node test-ai.mjs",
+    "bench:ai": "node bench-ai.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.17.1",

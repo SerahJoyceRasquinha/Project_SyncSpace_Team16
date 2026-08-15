@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, useLocation, Link } from 'react-router';
 import { useCollaboration } from '../hooks/useCollaboration';
 import { useToasts } from '../hooks/useToasts';
-import { loadSession, clearSession } from '../utils/session';
+import { loadSession, clearSession, saveAiContext } from '../utils/session';
 import Canvas from '../components/Canvas.jsx';
 import Editor from '../components/Editor.jsx';
 import AdminPanel from '../components/AdminPanel.jsx';
@@ -191,12 +191,27 @@ export default function Workspace() {
             <span className="badge pulse chat-badge">{chatUnread}</span>
           )}
         </button>
-   <button
-  className="ai-workspace-btn"
-  onClick={() => navigate(`/workspace/${workspaceId}/ai`)}
-  title="Open SyncSpace AI">
-     ✦ AI
-    </button>
+        <button
+          className="ai-workspace-btn"
+          onClick={() => {
+            // Hand the editor's CURRENT language to the AI page. Without this
+            // the AI page had no idea what the user was working in, which is
+            // why it used to fall back to a hardcoded "javascript".
+            try {
+              const meta = ydoc.getMap('editorMeta');
+              saveAiContext(workspaceId, {
+                language: meta.get('language') || '',
+                filename: meta.get('filename') || ''
+              });
+            } catch {
+              /* no shared doc yet: the AI page falls back to auto-detect */
+            }
+            navigate(`/workspace/${workspaceId}/ai`);
+          }}
+          title="Open SyncSpace AI"
+        >
+          ✦ AI
+        </button>
         <button
           className="leave-btn"
           onClick={() => {

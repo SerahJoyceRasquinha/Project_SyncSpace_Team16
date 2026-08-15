@@ -12,7 +12,8 @@
     "test:shapes": "node test-shapes.mjs",
     "test:connectors": "node test-connectors.mjs",
     "test:brushes": "node test-brushes.mjs",
-    "test:replay": "node test-replay.mjs"
+    "test:replay": "node test-replay.mjs",
+    "test:ai": "node --experimental-loader=./test-support/loader.mjs test-ai-render.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

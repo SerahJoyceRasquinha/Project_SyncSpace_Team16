@@ -67,3 +67,33 @@ export function loadAccount() {
 export function clearAccount() {
   localStorage.removeItem(ACCOUNT);
 }
+
+// --- editor -> AI handoff ----------------------------------------------
+// The AI page is a separate route with no access to the workspace's ydoc, so
+// the editor's current language (and filename) is stashed here when the user
+// presses ✦ AI. Deliberately small: the LANGUAGE, not the code buffer. Sending
+// a whole file on every AI request would be input tokens the user never asked
+// to spend, and latency they would feel on a one-line question.
+//
+// This is a DEFAULT, not an instruction. The backend outranks it with anything
+// the user explicitly writes ("...in java"), which is exactly the bug this
+// handoff exists to make impossible.
+
+const AI_CONTEXT = (workspaceId) => `syncspace:ai:${workspaceId}`;
+
+export function saveAiContext(workspaceId, context) {
+  try {
+    sessionStorage.setItem(AI_CONTEXT(workspaceId), JSON.stringify(context));
+  } catch {
+    /* storage full or blocked: the AI page just falls back to auto-detect */
+  }
+}
+
+export function loadAiContext(workspaceId) {
+  try {
+    const raw = sessionStorage.getItem(AI_CONTEXT(workspaceId));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
