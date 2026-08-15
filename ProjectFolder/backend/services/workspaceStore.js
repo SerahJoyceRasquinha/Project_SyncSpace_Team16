@@ -90,6 +90,21 @@ export async function updateWorkspace(workspaceId, mutate) {
   return { workspace: clone(record), result };
 }
 
+export async function deleteWorkspace(workspaceId, { adminId } = {}) {
+  if (!workspaceId) return null;
+
+  if (persistent) {
+    const query = { workspaceId, ...(adminId ? { adminId } : {}) };
+    const doc = await Workspace.findOneAndDelete(query);
+    return doc ? doc.toObject() : null;
+  }
+
+  const record = memory.get(workspaceId);
+  if (!record || (adminId && record.adminId !== adminId)) return null;
+  memory.delete(workspaceId);
+  return clone(record);
+}
+
 // ---- helpers used by controllers + sockets ------------------------------
 
 /** Everything that is safe to send to a browser. NEVER includes passwordHash. */

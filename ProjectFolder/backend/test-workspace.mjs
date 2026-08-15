@@ -155,6 +155,29 @@ const dupe = await post(`/workspaces/${wsId}/join`, {
 });
 check('duplicate username is refused', dupe.status === 409);
 
+// 10 -------------------------------------------------------- delete workspace
+const memberDelete = await fetch(`${URL}/api/workspaces/${wsId}`, {
+  method: 'DELETE',
+  headers: { Authorization: `Bearer ${approvedToken}` }
+});
+check('member cannot delete an administrator workspace', memberDelete.status === 403);
+
+const deleted = await fetch(`${URL}/api/workspaces/${wsId}`, {
+  method: 'DELETE',
+  headers: { Authorization: `Bearer ${adminToken}` }
+});
+const deletedText = await deleted.text();
+check('admin can delete their workspace', deleted.status === 200);
+
+const deletedPeek = await fetch(`${URL}/api/workspaces/${wsId}`);
+check('deleted workspace is no longer discoverable by ID', deletedPeek.status === 404);
+
+const deletedJoin = await post(`/workspaces/${wsId}/join`, {
+  username: 'Ghost',
+  password: 'secret123'
+});
+check('deleted workspace refuses new join attempts by ID', deletedJoin.status === 404);
+
 // no token at all
 const anon = io(URL);
 const anonFailed = await new Promise((resolve) => {

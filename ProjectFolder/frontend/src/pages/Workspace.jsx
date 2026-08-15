@@ -37,6 +37,24 @@ export default function Workspace() {
 
   const isAdmin = session?.role === 'admin';
 
+  const handleDeleteWorkspace = async () => {
+    if (!session?.token) return false;
+    if (!window.confirm(`Delete "${workspace?.name || 'this workspace'}"? Everyone will lose access immediately.`)) {
+      return false;
+    }
+
+    try {
+      await api.deleteWorkspace(workspaceId, session.token);
+      clearSession(workspaceId);
+      toast('Workspace deleted.', 'success');
+      navigate('/dashboard', { replace: true });
+      return true;
+    } catch (err) {
+      toast(err.message || 'Could not delete this workspace.', 'error');
+      return false;
+    }
+  };
+
   // No token in this tab -> you were never let in. Do not render the editor at all.
   useEffect(() => {
     if (!session) navigate('/join', { replace: true });

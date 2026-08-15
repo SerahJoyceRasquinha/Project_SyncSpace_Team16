@@ -38,6 +38,19 @@ export function disconnectUser(workspaceId, userId, reason) {
   }
 }
 
+/** Tell every connected participant (including lobby users) why a workspace
+ * disappeared before closing their socket. Packet ordering ensures the browser
+ * receives this specific terminal state instead of a generic disconnect. */
+export function disconnectWorkspace(workspaceId, reason) {
+  if (!io) return;
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data?.workspaceId === workspaceId) {
+      socket.emit('workspace:deleted', { reason });
+      socket.disconnect(true);
+    }
+  }
+}
+
 /** How many people are actually connected right now (runtime truth, not DB). */
 export function connectedCount(workspaceId) {
   return io?.sockets.adapter.rooms.get(roomOf(workspaceId))?.size || 0;

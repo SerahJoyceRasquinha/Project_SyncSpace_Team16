@@ -61,6 +61,28 @@ export default function Dashboard() {
 
   const membershipRole = (item) => (item.member?.role || item.role || 'member');
 
+  const handleDelete = async (item) => {
+    const ws = item.workspace || item;
+    if (membershipRole(item) !== 'admin' || !account?.token || !window.confirm(`Delete "${ws.name}"? Everyone will lose access to it immediately.`)) {
+      return;
+    }
+
+    setDeleting(ws.workspaceId);
+    setError('');
+    try {
+      // Dashboard authentication identifies the account, but deletion requires
+      // a workspace access token. Re-enter first so the server can verify this
+      // account is still the administrator of this exact workspace.
+      const access = await api.enterWorkspace(ws.workspaceId, account.token);
+      await api.deleteWorkspace(ws.workspaceId, access.token);
+      setWorkspaces((current) => current.filter((entry) => (entry.workspace || entry).workspaceId !== ws.workspaceId));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   if (!ready) {
     return (
       <div className="centered">
@@ -127,13 +149,24 @@ export default function Dashboard() {
                     <span className="tag admin">{membershipRole(item)}</span>
                     <span>{(ws.members && ws.members.length) || ws.memberCount || 1} member(s)</span>
                   </div>
-                  <button
-                    className="btn"
-                    onClick={() => open(item)}
-                    disabled={opening === ws.workspaceId}
-                  >
-                    {opening === ws.workspaceId ? 'Opening…' : 'Open workspace'}
-                  </button>
+                  <div className="dash-card-actions">
+                    <button
+                      className="btn"
+                      onClick={() => open(item)}
+                      disabled={opening === ws.workspaceId}
+                    >
+                      {opening === ws.workspaceId ? 'Opening…' : 'Open workspace'}
+                    </button>
+                    {membershipRole(item) === 'admin' && (
+                      <button
+                        className="btn-remove danger"
+                        onClick={() => handleDelete(item)}
+                        disabled={deleting === ws.workspaceId}
+                      >
+                        {deleting === ws.workspaceId ? 'Deleting…' : 'Delete'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
